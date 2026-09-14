@@ -4,7 +4,7 @@
  * ============================================================
  *
  * Every piece of content Recension owns: the manuscript tree
- * (book → chapter → scene), the card database, and the event timeline.
+ * (book → chapter → scene), the card database, and the event timeline..
  *
  * Descends from Remnant's notesStore.js. What carried over, what didn't:
  *
