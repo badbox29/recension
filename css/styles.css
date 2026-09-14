@@ -1073,3 +1073,48 @@ html.typewriter .scene { padding-bottom: 0; }
 @media (max-width: 30rem) {
   .name-grid, .pair-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Settings tabs ─────────────────────────────────────────────── */
+
+.set-tabs {
+  display: flex;
+  gap: 1.25rem;
+  border-bottom: 1px solid var(--rule);
+  margin: -0.25rem 0 1.5rem;
+}
+
+.set-tabs [role="tab"] {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0 0 0.5rem;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.set-tabs [role="tab"]:hover { color: var(--ink); }
+.set-tabs [role="tab"][aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+/* All three panels share one grid cell, so the container is always as tall
+   as the tallest panel. Switching tabs then costs no height change and the
+   modal stops jumping under the pointer.
+
+   visibility:hidden rather than display:none — inactive panels have to stay
+   in layout to contribute their height, and visibility (unlike opacity)
+   still removes them from the tab order and from screen readers. */
+.set-panels { display: grid; }
+.set-panel  { grid-area: 1 / 1; visibility: hidden; }
+.set-panel.is-active { visibility: visible; }
+
+/* With sections grouped, the last one in a panel needs no trailing gap. */
+.set-panel .set-block:last-child { margin-bottom: 0; }
+
+@media (max-width: 30rem) {
+  .set-tabs { gap: 0.875rem; }
+}
