@@ -1058,6 +1058,50 @@ function openSettings() {
   openModal('modal-settings');
 }
 
+/**
+ * saveWorkerUrl() — store the address and immediately say whether it works.
+ *
+ * Saving silently is the wrong shape here: a typo in this field produces no
+ * error until some later sync fails for reasons that look unrelated.
+ * GET /ping is unauthenticated and cheap, so the field can verify itself.
+ */
+async function saveWorkerUrl() {
+  const raw = $('set-worker').value.trim().replace(/\/+$/, '');
+  const note = $('sync-note');
+
+  if (!raw) {
+    App.data.workerUrl = '';
+    saveLocal();
+    note.textContent = 'Sync is off. Everything stays on this device.';
+    showToast('Sync turned off.');
+    return;
+  }
+
+  if (!/^https?:\/\//i.test(raw)) {
+    note.textContent = 'Include the https:// at the start of the address.';
+    return;
+  }
+
+  App.data.workerUrl = raw;
+  saveLocal();
+  $('set-worker').value = raw;
+  note.textContent = 'Checking…';
+
+  try {
+    const res = await fetch(`${raw}/ping`);
+    const body = res.ok ? await res.json().catch(() => null) : null;
+    if (body?.ok) {
+      note.textContent = 'Connected. Set up an account below to start syncing.';
+      showToast('Worker connected.');
+      if (!Auth.isGuest()) Sync.start();
+    } else {
+      note.textContent = `Reached that address, but it answered ${res.status}. Check the URL points at your worker.`;
+    }
+  } catch {
+    note.textContent = 'Saved, but that address did not answer. Check it and your connection.';
+  }
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -1206,10 +1250,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveAccount();
     if (e.target.checked) typewriterScroll(true);
   });
-  $('set-worker').addEventListener('change', e => {
-    App.data.workerUrl = e.target.value.trim().replace(/\/+$/, '');
-    saveLocal();
-    showToast(App.data.workerUrl ? 'Worker address saved.' : 'Sync turned off.');
+  $('btn-save-worker').addEventListener('click', saveWorkerUrl);
+  // Enter in the field still works, for anyone who expects it to.
+  $('set-worker').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); saveWorkerUrl(); }
   });
   $('btn-sync-now').addEventListener('click', async () => {
     await flushActiveScene();
