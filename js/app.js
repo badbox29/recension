@@ -211,9 +211,17 @@ function fmtWords(n) {
 
 // One contents line: title, leader, figure. The leader is what makes this
 // read as a table of contents rather than a file list.
-function tocLine(node, { className, title, figure, status, onClick, current }) {
+//
+// Every row carries the same actions (rename, delete) behind a hover
+// affordance. Parts previously had none at all, which made a mistyped part
+// permanent — the row menu is what fixes that.
+function tocLine(node, { className, kind, id, title, figure, status, onOpen, current }) {
   const row = el(node, className);
-  row.append(el('span', 'toc-title', title || 'Untitled'));
+  if (kind) { row.dataset.kind = kind; row.dataset.id = id; }
+
+  const label = el('span', 'toc-title', title || 'Untitled');
+  row.append(label);
+
   if (status) {
     const m = el('span', 'toc-mark');
     m.dataset.status = status;
@@ -221,10 +229,136 @@ function tocLine(node, { className, title, figure, status, onClick, current }) {
   }
   row.append(el('span', 'toc-leader'));
   if (figure != null) row.append(el('span', 'toc-figure', figure));
+
+  if (kind) {
+    const more = el('button', 'toc-more', '\u22EF');
+    more.setAttribute('aria-label', `Actions for ${title || 'item'}`);
+    more.addEventListener('click', e => {
+      e.stopPropagation();
+      openRowMenu(more, kind, id, title);
+    });
+    row.append(more);
+    // Double-click the row to rename — the fast path once you know it's there.
+    row.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      startRename(label, kind, id, title);
+    });
+  }
+
   if (current) row.setAttribute('aria-current', 'true');
-  if (onClick) row.addEventListener('click', onClick);
+  if (onOpen) row.addEventListener('click', onOpen);
   return row;
 }
+
+// ── Row menu ───────────────────────────────────────────────────────
+
+let _menu = null;
+function closeRowMenu() { _menu?.remove(); _menu = null; }
+document.addEventListener('click', closeRowMenu);
+
+const KIND_LABEL = { book: 'part', chapter: 'chapter', scene: 'scene' };
+
+function openRowMenu(anchor, kind, id, title) {
+  closeRowMenu();
+  const menu = el('div', 'row-menu');
+
+  const rename = el('button', null, 'Rename');
+  rename.addEventListener('click', e => {
+    e.stopPropagation();
+    closeRowMenu();
+    const label = anchor.parentElement.querySelector('.toc-title');
+    startRename(label, kind, id, title);
+  });
+
+  const del = el('button', 'danger', 'Delete');
+  del.addEventListener('click', e => {
+    e.stopPropagation();
+    closeRowMenu();
+    confirmDelete(kind, id, title);
+  });
+
+  menu.append(rename, del);
+  document.body.append(menu);
+
+  const r = anchor.getBoundingClientRect();
+  menu.style.top  = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)}px`;
+  _menu = menu;
+}
+
+// ── Inline rename ──────────────────────────────────────────────────
+// Swaps the title span for an input in place. A prompt() dialog would be
+// fewer lines but throws you out of the page you're reading.
+
+function startRename(labelEl, kind, id, current) {
+  if (!labelEl || labelEl.dataset.editing) return;
+  labelEl.dataset.editing = '1';
+
+  const input = el('input', 'toc-rename');
+  input.value = current || '';
+  input.setAttribute('aria-label', `Rename ${KIND_LABEL[kind] || 'item'}`);
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const commit = async (save) => {
+    if (settled) return;
+    settled = true;
+    const next = input.value.trim();
+    input.replaceWith(labelEl);
+    delete labelEl.dataset.editing;
+    if (save && next && next !== current) {
+      const rec = await RecordStore.get(kind, id);
+      if (rec) await RecordStore.put(kind, id, { ...rec, title: next });
+      await renderTree();
+      renderTabs();
+      refreshSyncState();
+    }
+  };
+
+  input.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter')  { e.preventDefault(); commit(true); }
+    if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+  });
+  input.addEventListener('blur', () => commit(true));
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('dblclick', e => e.stopPropagation());
+}
+
+// ── Delete ─────────────────────────────────────────────────────────
+// Containers detach their children rather than destroying them, so the
+// confirm text says exactly what will happen to the words.
+
+function confirmDelete(kind, id, title) {
+  const name = title || `this ${KIND_LABEL[kind]}`;
+  const message = {
+    book:    `Delete "${name}"? Its chapters stay, moved to the top level.`,
+    chapter: `Delete "${name}"? Its scenes stay, moved to Unplaced.`,
+    scene:   `Delete "${name}"? The text in it is lost.`,
+  }[kind];
+
+  showConfirm(message, async () => {
+    if (kind === 'book')    await RecordStore.deleteBook(id);
+    if (kind === 'chapter') await RecordStore.deleteChapter(id);
+    if (kind === 'scene') {
+      await RecordStore.deleteScene(id);
+      App.data.tabState.openIds = App.data.tabState.openIds.filter(x => x !== id);
+      if (App.data.tabState.activeId === id) {
+        App.activeScene = null;
+        App.data.tabState.activeId = App.data.tabState.openIds.at(-1) || null;
+      }
+      saveAccount();
+    }
+    await renderTree();
+    renderTabs();
+    App.data.tabState.activeId ? openScene(App.data.tabState.activeId) : showEmpty();
+    refreshSyncState();
+  });
+}
+
+// ── Tree ───────────────────────────────────────────────────────────
 
 async function renderTree() {
   App.tree = await RecordStore.getTree();
@@ -238,77 +372,87 @@ async function renderTree() {
 
     const partRow = tocLine('div', {
       className: 'toc-part',
+      kind: 'book', id: book.id,
       title: book.title,
       figure: fmtWords(bookWords),
-      onClick: () => { setCollapsed(book.id, !collapsed); renderTree(); },
+      onOpen: () => { setCollapsed(book.id, !collapsed); renderTree(); },
     });
-    partRow.prepend(el('span', 'caret', collapsed ? '▸' : '▾'));
+    partRow.prepend(el('span', 'caret', collapsed ? '\u25B8' : '\u25BE'));
     toc.append(partRow);
     if (collapsed) continue;
 
-    for (const ch of book.chapters) {
-      const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
-      toc.append(tocLine('div', {
-        className: 'toc-chapter',
-        title: ch.title,
-        figure: fmtWords(chWords),
-        onClick: () => renameInline('chapter', ch.id, ch.title),
-      }));
+    for (const ch of book.chapters) toc.append(...chapterRows(ch, 'toc-chapter'));
 
-      for (const sc of ch.scenes) toc.append(sceneRow(sc));
-
-      const add = el('button', 'toc-add', '+ scene');
-      add.addEventListener('click', async () => {
-        const id = await RecordStore.createScene(ch.id);
-        if (id) { await renderTree(); openScene(id); }
-      });
-      toc.append(add);
-    }
-
-    const addCh = el('button', 'toc-add', '+ chapter');
-    addCh.style.paddingLeft = '1.125rem';
+    const addCh = el('button', 'toc-add toc-add-chapter', '+ chapter');
     addCh.addEventListener('click', async () => {
-      await RecordStore.createChapter(book.id, 'Untitled chapter');
+      await RecordStore.createChapter(book.id);
       renderTree();
     });
     toc.append(addCh);
   }
 
-  // Unplaced scenes. A real state, not an error — it's where scenes written
-  // before they have a home live, and every novelist has a pile of them.
-  if (App.tree.unfiled.length || !App.tree.books.length) {
+  // Chapters with no part. Parts are optional — see createChapter().
+  for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
+
+  if (App.tree.unfiled.length) {
     toc.append(el('div', 'toc-group-label', 'Unplaced'));
     for (const sc of App.tree.unfiled) toc.append(sceneRow(sc));
-    const add = el('button', 'toc-add', '+ scene');
-    add.addEventListener('click', async () => {
-      const id = await RecordStore.createScene(null);
-      if (id) { await renderTree(); openScene(id); }
-    });
-    toc.append(add);
   }
 
-  $('rail-total').textContent =
-    `${App.tree.totalWords.toLocaleString()} words`;
+  const addLoose = el('button', 'toc-add toc-add-chapter', '+ chapter');
+  addLoose.addEventListener('click', async () => {
+    await RecordStore.createChapter(null);
+    renderTree();
+  });
+  toc.append(addLoose);
+
+  const addScene = el('button', 'toc-add toc-add-chapter', '+ scene');
+  addScene.addEventListener('click', async () => {
+    const id = await RecordStore.createScene(null);
+    if (id) { await renderTree(); openScene(id); }
+  });
+  toc.append(addScene);
+
+  $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
+}
+
+function chapterRows(ch, className) {
+  const rows = [];
+  const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+  const collapsed = isCollapsed(ch.id);
+
+  const row = tocLine('div', {
+    className,
+    kind: 'chapter', id: ch.id,
+    title: ch.title,
+    figure: fmtWords(chWords),
+    onOpen: () => { setCollapsed(ch.id, !collapsed); renderTree(); },
+  });
+  row.prepend(el('span', 'caret', collapsed ? '\u25B8' : '\u25BE'));
+  rows.push(row);
+  if (collapsed) return rows;
+
+  for (const sc of ch.scenes) rows.push(sceneRow(sc));
+
+  const add = el('button', 'toc-add', '+ scene');
+  add.addEventListener('click', async () => {
+    const id = await RecordStore.createScene(ch.id);
+    if (id) { await renderTree(); openScene(id); }
+  });
+  rows.push(add);
+  return rows;
 }
 
 function sceneRow(sc) {
   return tocLine('button', {
     className: 'toc-scene',
+    kind: 'scene', id: sc.id,
     title: sc.title,
     figure: fmtWords(sc.wordCount),
     status: sc.status && sc.status !== 'draft' ? sc.status : null,
     current: App.data.tabState.activeId === sc.id,
-    onClick: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
+    onOpen: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
   });
-}
-
-async function renameInline(type, id, current) {
-  const next = prompt('Name', current || '');
-  if (next == null) return;
-  const rec = await RecordStore.get(type, id);
-  if (!rec) return;
-  await RecordStore.put(type, id, { ...rec, title: next.trim() || 'Untitled' });
-  renderTree();
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────
@@ -622,9 +766,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
+  // Creating a part immediately opens its name for editing — a structural
+  // level you can't name is worse than no button at all.
   $('btn-new-part').addEventListener('click', async () => {
-    await RecordStore.createBook('Untitled part');
-    renderTree();
+    const id = await RecordStore.createBook('Untitled part');
+    await renderTree();
+    const label = document.querySelector(`[data-id="${id}"] .toc-title`);
+    if (label) startRename(label, 'book', id, 'Untitled part');
   });
   $('btn-empty-new').addEventListener('click', async () => {
     const id = await RecordStore.createScene(null);

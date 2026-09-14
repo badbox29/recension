@@ -4,7 +4,7 @@
  * ============================================================
  *
  * Every piece of content Recension owns: the manuscript tree
- * (book → chapter → scene), the card database, and the event timeline..
+ * (book → chapter → scene), the card database, and the event timeline.
  *
  * Descends from Remnant's notesStore.js. What carried over, what didn't:
  *
@@ -347,12 +347,18 @@ const RecordStore = (() => {
     return ok ? id : null;
   }
 
-  async function createChapter(bookId, title) {
+  // createChapter(bookId) — bookId null creates a LOOSE chapter, shown at the
+  // top level of the contents. Parts are optional: most novels don't have
+  // them, and requiring one before you can make a chapter would force the
+  // writer to invent a structural level they don't want.
+  async function createChapter(bookId = null, title) {
     const id = newId();
     const all = await getAll('chapter');
-    const siblings = Object.fromEntries(Object.entries(all).filter(([, c]) => c.bookId === bookId));
+    const siblings = Object.fromEntries(
+      Object.entries(all).filter(([, c]) => (c.bookId || null) === (bookId || null)));
     const ok = await put('chapter', id, {
-      id, bookId, title: title || 'Untitled Chapter', synopsis: '', order: nextOrder(siblings),
+      id, bookId: bookId || null, title: title || 'Untitled chapter',
+      synopsis: '', order: nextOrder(siblings),
     });
     return ok ? id : null;
   }
@@ -385,7 +391,7 @@ const RecordStore = (() => {
     for (const [k, e] of Object.entries(idx)) {
       const [type, id] = splitKey(k);
       if (type === 'book')         books.push({ id, title: e.t, order: e.o || 0, updatedAt: e.u });
-      else if (type === 'chapter') chapters.push({ id, title: e.t, bookId: e.p,
+      else if (type === 'chapter') chapters.push({ id, title: e.t, bookId: e.p || null,
                                                    order: e.o || 0, updatedAt: e.u });
       else if (type === 'scene')   scenes.push({ id, title: e.t, chapterId: e.p || null,
                                                  wordCount: e.w, status: e.s,
@@ -398,6 +404,12 @@ const RecordStore = (() => {
           ...c,
           scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
         })),
+      })),
+      // Chapters with no part, rendered at the top level. Same idea as
+      // unplaced scenes: structure you haven't imposed yet isn't an error.
+      looseChapters: sortByOrder(chapters.filter(c => !c.bookId)).map(c => ({
+        ...c,
+        scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
       })),
       unfiled: sortByOrder(scenes.filter(s => !s.chapterId)),
       totalWords: scenes.reduce((n, s) => n + (s.wordCount || 0), 0),
@@ -492,6 +504,32 @@ const RecordStore = (() => {
     };
   }
 
+  // ── Structural deletes ────────────────────────────────────────────
+  //
+  // Only a scene holds prose, so only deleting a scene can lose words.
+  // Deleting a container therefore DETACHES its children rather than
+  // destroying them: chapters of a deleted part become loose, scenes of a
+  // deleted chapter become unplaced. A structural tidy-up must never be a
+  // way to silently lose a draft.
+
+  async function deleteBook(id) {
+    const chapters = await getAll('chapter');
+    for (const c of Object.values(chapters)) {
+      if (c.bookId === id) await put('chapter', c.id, { ...c, bookId: null });
+    }
+    return remove('book', id);
+  }
+
+  async function deleteChapter(id) {
+    const scenes = await getAll('scene');
+    for (const s of Object.values(scenes)) {
+      if (s.chapterId === id) await put('scene', s.id, { ...s, chapterId: null });
+    }
+    return remove('chapter', id);
+  }
+
+  async function deleteScene(id) { return remove('scene', id); }
+
   // ── Reset ─────────────────────────────────────────────────────────
   // Guest switch-account only. Never called to "clean up."
 
@@ -507,6 +545,7 @@ const RecordStore = (() => {
     get, getAll, getIndex, put, putLocal, remove, removeLocal,
     // Tree
     createBook, createChapter, createScene, getTree,
+    deleteBook, deleteChapter, deleteScene,
     // Cards
     createCard, findCardByName, CARD_TYPES,
     // Events
