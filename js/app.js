@@ -41,8 +41,17 @@ const App = {
   tree: null,
   activeScene: null,   // the full record currently in the editor
   editor: null,        // EasyMDE instance, created lazily
-  readOnly: false,
+  readOnly: false,     // narrow viewport — editing disabled entirely
+
+  // Continuous read-through. 'edit' shows one scene in the editor; 'read'
+  // shows many scenes concatenated. Narrow viewports are locked to 'read',
+  // which is why this is two modes and not three.
+  view: 'edit',
+  readScope: { kind: 'all', id: null },
+  readReturn: null,    // where to land when coming back from an edit
 };
+
+const TYPE_KEY = 'rec_typography';
 
 // ── Default state ──────────────────────────────────────────────────
 
@@ -108,6 +117,47 @@ function saveLocal() {
 function saveAccount() {
   saveLocal();
   if (typeof Sync !== 'undefined') Sync.markAccountDirty();
+}
+
+// ── Typography ─────────────────────────────────────────────────────
+//
+// Measure and size are separate knobs and are often confused. Measure is
+// characters per line and changes reading rhythm; size is how big the type
+// is and changes eye strain. "Too narrow" usually means size, not measure.
+//
+// Stored per-device. It depends on the monitor you're sitting at, so
+// syncing it across devices would be actively wrong.
+
+const TYPE_DEFAULTS = { measure: 'book', size: 'md', readTitles: true };
+
+function loadTypography() {
+  let t = TYPE_DEFAULTS;
+  try { t = { ...TYPE_DEFAULTS, ...(JSON.parse(localStorage.getItem(TYPE_KEY)) || {}) }; } catch {}
+  applyTypography(t);
+  return t;
+}
+
+function applyTypography(t) {
+  document.documentElement.dataset.measure = t.measure;
+  document.documentElement.dataset.size    = t.size;
+  App.typography = t;
+  try { localStorage.setItem(TYPE_KEY, JSON.stringify(t)); } catch {}
+  App.editor?.codemirror?.refresh();
+}
+
+function setTypography(patch) {
+  applyTypography({ ...App.typography, ...patch });
+  syncTypePopover();
+  if (App.view === 'read') renderReadView();
+}
+
+function syncTypePopover() {
+  const t = App.typography;
+  for (const b of document.querySelectorAll('[data-measure]'))
+    b.setAttribute('aria-pressed', String(b.dataset.measure === t.measure));
+  for (const b of document.querySelectorAll('[data-size]'))
+    b.setAttribute('aria-pressed', String(b.dataset.size === t.size));
+  $('pop-titles').checked = !!t.readTitles;
 }
 
 // ── Small DOM helpers ──────────────────────────────────────────────
@@ -435,9 +485,15 @@ async function renderTree() {
       kind: 'book', id: book.id,
       title: book.title,
       figure: fmtWords(bookWords),
-      onOpen: () => { setCollapsed(book.id, !collapsed); renderTree(); },
+      onOpen: () => openRead({ kind: 'book', id: book.id }),
     });
-    partRow.prepend(el('span', 'caret', collapsed ? '\u25B8' : '\u25BE'));
+    const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
+    caret.addEventListener('click', e => {
+      e.stopPropagation();
+      setCollapsed(book.id, !collapsed);
+      renderTree();
+    });
+    partRow.prepend(caret);
     toc.append(partRow);
     if (collapsed) continue;
 
@@ -484,9 +540,15 @@ function chapterRows(ch, className) {
     kind: 'chapter', id: ch.id,
     title: ch.title,
     figure: fmtWords(chWords),
-    onOpen: () => { setCollapsed(ch.id, !collapsed); renderTree(); },
+    onOpen: () => openRead({ kind: 'chapter', id: ch.id }),
   });
-  row.prepend(el('span', 'caret', collapsed ? '\u25B8' : '\u25BE'));
+  const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
+  caret.addEventListener('click', e => {
+    e.stopPropagation();
+    setCollapsed(ch.id, !collapsed);
+    renderTree();
+  });
+  row.prepend(caret);
   rows.push(row);
   if (collapsed) return rows;
 
@@ -525,6 +587,217 @@ function sceneRow(sc) {
     current: App.data.tabState.activeId === sc.id,
     onOpen: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
   });
+}
+
+// ── Continuous read-through ────────────────────────────────────────
+//
+// Scrivener calls this Scrivenings. It's read-only here on purpose:
+// reading a draft and revising it are different activities, and click is
+// already how you select text. If clicking dropped you into an editor, you
+// could never select a sentence or double-click a word — and the gesture
+// would be unrecoverable mid-flow.
+//
+// Editing is reached deliberately instead: a margin marker at each scene
+// boundary (never ambiguous about which scene it means, unlike a floating
+// button when two scenes are half on screen), or the E key for the scene
+// currently centred.
+
+function scopeLabel(scope) {
+  if (scope.kind === 'all') return 'Whole manuscript';
+  if (scope.kind === 'book')
+    return App.tree.books.find(b => b.id === scope.id)?.title || 'Part';
+  const all = [...App.tree.books.flatMap(b => b.chapters), ...App.tree.looseChapters];
+  return all.find(c => c.id === scope.id)?.title || 'Chapter';
+}
+
+// scenesInScope() — scenes in tree order, each tagged with the chapter it
+// came from so the read view can show breaks between chapters.
+function scenesInScope(scope) {
+  const out = [];
+  const pushChapter = ch => ch.scenes.forEach((sc, i) =>
+    out.push({ ...sc, chapterTitle: ch.title, chapterId: ch.id, firstInChapter: i === 0 }));
+
+  if (scope.kind === 'chapter') {
+    const all = [...App.tree.books.flatMap(b => b.chapters), ...App.tree.looseChapters];
+    const ch = all.find(c => c.id === scope.id);
+    if (ch) pushChapter(ch);
+    return out;
+  }
+  const books = scope.kind === 'book'
+    ? App.tree.books.filter(b => b.id === scope.id)
+    : App.tree.books;
+  for (const b of books) for (const ch of b.chapters) pushChapter(ch);
+  if (scope.kind === 'all') {
+    for (const ch of App.tree.looseChapters) pushChapter(ch);
+    App.tree.unfiled.forEach(sc =>
+      out.push({ ...sc, chapterTitle: null, firstInChapter: false }));
+  }
+  return out;
+}
+
+async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) {
+  if (App.activeScene) await flushActiveScene();
+  App.view = 'read';
+  App.readScope = scope;
+
+  $('empty').hidden = true;
+  $('scene').hidden = true;
+  $('readview').hidden = false;
+  $('btn-read').setAttribute('aria-pressed', 'true');
+
+  await renderReadView();
+
+  if (focusSceneId) {
+    const node = document.querySelector(`.rv-scene[data-id="${focusSceneId}"]`);
+    node?.scrollIntoView({ block: 'start' });
+  } else {
+    $('sheet').scrollTop = 0;
+  }
+  updateSpy();
+}
+
+async function renderReadView() {
+  const rv = $('readview');
+  rv.replaceChildren();
+
+  const scenes = scenesInScope(App.readScope);
+  const words = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+
+  const head = el('header', 'rv-head');
+  head.append(el('h1', null, scopeLabel(App.readScope)));
+  head.append(el('p', 'rv-count',
+    `${words.toLocaleString()} words · ${scenes.length} scene${scenes.length === 1 ? '' : 's'}`));
+  rv.append(head);
+
+  if (!scenes.length) {
+    rv.append(el('p', 'rv-empty', 'Nothing written here yet.'));
+    return;
+  }
+
+  // Bodies aren't in the tree index, so they're read here — the one place
+  // in the app that deliberately loads many scene bodies at once.
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+
+    if (meta.firstInChapter && meta.chapterTitle && App.readScope.kind !== 'chapter') {
+      rv.append(el('h2', 'rv-chapter', meta.chapterTitle));
+    }
+
+    const sec = el('section', 'rv-scene');
+    sec.dataset.id = meta.id;
+
+    // Margin marker: anchored to the scene, so it is never ambiguous which
+    // scene it would open.
+    const mark = el('button', 'rv-edit');
+    mark.type = 'button';
+    mark.setAttribute('aria-label', `Edit "${rec.title || 'scene'}"`);
+    mark.innerHTML = '<svg viewBox="0 0 20 20"><path d="M13.5 3.5l3 3L7 16H4v-3z"/></svg>';
+    mark.addEventListener('click', () => editFromRead(meta.id));
+    sec.append(mark);
+
+    if (App.typography.readTitles) {
+      const t = el('h3', 'rv-title', rec.title || 'Untitled scene');
+      sec.append(t);
+    } else if (!meta.firstInChapter) {
+      sec.append(el('div', 'rv-break', '\u00A7'));
+    }
+
+    const body = el('div', 'rv-body');
+    body.innerHTML = renderMarkdown(rec.body) ||
+      '<p class="rv-blank">This scene is empty.</p>';
+    sec.append(body);
+    rv.append(sec);
+  }
+}
+
+// ── Scroll-spy ─────────────────────────────────────────────────────
+// Whichever scene occupies the middle of the viewport is "where you are".
+// Drives both the contents highlight and the tab bar, so you always know
+// your position without looking away from the prose.
+
+let _spyRaf = null;
+function updateSpy() {
+  if (App.view !== 'read') return;
+  const centred = centredScene();
+  if (!centred || centred === App.data.tabState.activeId) return;
+  App.data.tabState.activeId = centred;
+  saveLocal();              // position, not content — no need to sync it
+  renderTree();
+  renderTabs();
+}
+
+function centredScene() {
+  const mid = window.innerHeight / 2;
+  let best = null, bestDist = Infinity;
+  for (const sec of document.querySelectorAll('.rv-scene')) {
+    const r = sec.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) continue;
+    const dist = Math.abs(Math.max(r.top, 0) - mid);
+    if (r.top <= mid && r.bottom >= mid) return sec.dataset.id;
+    if (dist < bestDist) { bestDist = dist; best = sec.dataset.id; }
+  }
+  return best;
+}
+
+// ── Read ⇄ edit handoff ────────────────────────────────────────────
+
+// Land near the paragraph you were looking at, not at the top of the
+// scene. Otherwise every edit starts with hunting for the sentence that
+// bothered you. Paragraph index is approximate and that's fine.
+function paragraphAtViewport(sceneEl) {
+  if (!sceneEl) return 0;
+  const paras = sceneEl.querySelectorAll('.rv-body > *');
+  const mid = window.innerHeight / 2;
+  let idx = 0;
+  paras.forEach((p, i) => { if (p.getBoundingClientRect().top <= mid) idx = i; });
+  return idx;
+}
+
+async function editFromRead(sceneId) {
+  if (App.readOnly) return;   // narrow viewports don't edit at all
+  const sec = document.querySelector(`.rv-scene[data-id="${sceneId}"]`);
+  App.readReturn = { scope: App.readScope, sceneId, para: paragraphAtViewport(sec) };
+
+  App.view = 'edit';
+  $('readview').hidden = true;
+  $('btn-read').setAttribute('aria-pressed', 'false');
+  await openScene(sceneId);
+
+  // Put the caret on roughly the paragraph that was on screen.
+  const cm = App.editor?.codemirror;
+  if (cm && App.readReturn.para > 0) {
+    const blocks = (App.activeScene.body || '').split(/\n{2,}/);
+    const upto = blocks.slice(0, App.readReturn.para).join('\n\n');
+    const line = upto ? upto.split('\n').length : 0;
+    cm.setCursor({ line, ch: 0 });
+    cm.scrollIntoView({ line, ch: 0 }, 200);
+  }
+}
+
+// Reciprocal: closing the editor returns to the same place in the read
+// view. A one-way trip would lose your place on every typo fix.
+async function backToRead() {
+  const ret = App.readReturn;
+  App.readReturn = null;
+  await openRead(ret?.scope || { kind: 'all', id: null }, ret?.sceneId || null);
+}
+
+function toggleRead() {
+  if (App.view === 'read') {
+    App.readReturn
+      ? editFromRead(App.data.tabState.activeId)
+      : exitRead();
+  } else {
+    openRead({ kind: 'all', id: null }, App.data.tabState.activeId);
+  }
+}
+
+function exitRead() {
+  App.view = 'edit';
+  $('readview').hidden = true;
+  $('btn-read').setAttribute('aria-pressed', 'false');
+  App.data.tabState.activeId ? openScene(App.data.tabState.activeId) : showEmpty();
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────
@@ -671,6 +944,9 @@ async function openScene(id) {
   App.data.tabState.activeId = id;
   saveAccount();
 
+  App.view = 'edit';
+  $('readview').hidden = true;
+  $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
 
@@ -833,7 +1109,44 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ── Events ──────────────────────────────────────────────────────
+  loadTypography();
+  syncTypePopover();
+
   $('btn-contents').addEventListener('click', toggleRail);
+  $('btn-read').addEventListener('click', toggleRead);
+
+  $('btn-type').addEventListener('click', e => {
+    e.stopPropagation();
+    const pop = $('type-popover');
+    const show = pop.hidden;
+    pop.hidden = !show;
+    $('btn-type').setAttribute('aria-expanded', String(show));
+    if (show) {
+      const r = $('btn-type').getBoundingClientRect();
+      pop.style.top  = `${r.bottom + 6}px`;
+      pop.style.left = `${Math.min(r.left - 80, window.innerWidth - pop.offsetWidth - 10)}px`;
+    }
+  });
+  $('type-popover').addEventListener('click', e => {
+    e.stopPropagation();
+    const m = e.target.closest('[data-measure]');
+    const z = e.target.closest('[data-size]');
+    if (m) setTypography({ measure: m.dataset.measure });
+    if (z) setTypography({ size: z.dataset.size });
+  });
+  $('pop-titles').addEventListener('change', e =>
+    setTypography({ readTitles: e.target.checked }));
+  document.addEventListener('click', () => {
+    $('type-popover').hidden = true;
+    $('btn-type').setAttribute('aria-expanded', 'false');
+  });
+
+  // Scroll-spy, rAF-throttled so a fast scroll through 60 scenes doesn't
+  // re-render the contents tree on every frame.
+  $('sheet').addEventListener('scroll', () => {
+    if (App.view !== 'read' || _spyRaf) return;
+    _spyRaf = requestAnimationFrame(() => { _spyRaf = null; updateSpy(); });
+  }, { passive: true });
   $('scrim').addEventListener('click', closeRail);
   $('btn-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
@@ -877,12 +1190,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (fn) fn();
   });
 
+  // E edits the scene currently centred in the read view. Once you know the
+  // view, reaching for the margin marker is slower than the thought that
+  // prompted it — the marker stays as the discoverable route.
+  document.addEventListener('keydown', e => {
+    if (App.view !== 'read' || App.readOnly) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if (e.key === 'e' || e.key === 'E') {
+      const id = centredScene();
+      if (id) { e.preventDefault(); editFromRead(id); }
+    }
+  });
+
   // Esc closes the topmost open modal.
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     for (const id of ['modal-confirm', 'modal-settings', 'modal-account-setup']) {
       if (!$(id).hidden) { closeModal(id); return; }
     }
+    if (!$('type-popover').hidden) { $('type-popover').hidden = true; return; }
+    // Nothing else open and we arrived here from reading — go back.
+    if (App.view === 'edit' && App.readReturn) backToRead();
   });
 
   // Ctrl/Cmd-S flushes to disk and pushes. Writers press it reflexively;
