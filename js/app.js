@@ -1279,11 +1279,52 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (e.key === 'Enter') { e.preventDefault(); saveWorkerUrl(); }
   });
   $('btn-sync-now').addEventListener('click', async () => {
+    // Report the actual blocker. "Sync incomplete" for a guest account is
+    // true but useless — there's nothing to sync TO yet.
+    if (!App.data.workerUrl) { showToast('Add your worker address first.'); return; }
+    if (Auth.isGuest())      { showToast('Create an account below to sync.'); return; }
+
     await flushActiveScene();
-    const r = await Sync.flush();
-    await Sync.pull();
+    const pushed = await Sync.flush();
+    const pulled = await Sync.pull();
     await renderTree();
-    showToast(r.ok ? 'Synced.' : 'Sync incomplete — will retry.');
+    renderTabs();
+    if (pushed.ok && pulled.ok) showToast('Synced.');
+    else showToast('Sync incomplete — it will retry on its own.');
+    Sync.lastSyncTime().then(t => {
+      $('sync-note').textContent = t ? `Last synced ${new Date(t).toLocaleString()}.` : 'Not synced yet.';
+    });
+  });
+
+  // Account controls. auth.js owns the wizards; these just open them.
+  $('btn-create-account').addEventListener('click', () => {
+    if (!App.data.workerUrl) {
+      showToast('Add and save your worker address first.');
+      return;
+    }
+    closeModal('modal-settings');
+    Auth.showSetupFresh();
+  });
+  $('btn-load-token').addEventListener('click', () => {
+    if (!App.data.workerUrl) {
+      showToast('Add and save your worker address first.');
+      return;
+    }
+    closeModal('modal-settings');
+    Auth.showSetupLoadToken();
+  });
+  $('btn-copy-token').addEventListener('click', () => {
+    navigator.clipboard.writeText(App.data.userToken || '')
+      .then(() => showToast('Token copied.'))
+      .catch(() => showToast('Select the token and copy it manually.'));
+  });
+  $('settings-upgrade-google').addEventListener('click', () => {
+    closeModal('modal-settings');
+    Auth.showGoogleUpgradeFlow();
+  });
+  $('btn-switch-account').addEventListener('click', () => {
+    closeModal('modal-settings');
+    Auth.showGuestSwitchConfirm();
   });
 
   $('confirm-cancel-btn').addEventListener('click', () => closeModal('modal-confirm'));
