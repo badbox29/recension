@@ -1485,6 +1485,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (phase === 'records' && total) setSyncState('syncing', `Fetching ${done}/${total}`);
     },
     onOutlineReady: () => renderTree(),
+
+    /**
+     * This device is holding a token that has since been upgraded to
+     * Google sign-in on another device. The token is dead — /auth/migrate
+     * deletes the source key space — so there is nothing to recover by
+     * retrying. Say so plainly and send them to sign in.
+     *
+     * Local content is left alone. It's a copy of what already moved to
+     * the Google account, and deleting a manuscript because a credential
+     * changed would be an unforgivable way to be tidy.
+     */
+    onAccountMigrated: () => {
+      if (App._migrationPrompted) return;   // once per session, not per pull
+      App._migrationPrompted = true;
+      showToast('This account now uses Google sign-in.', 6000);
+      setTimeout(() => Auth.showAccountSetup(), 400);
+    },
     onAuthFailure: async () => {
       if (typeof Auth.handleAuthFailure === 'function') return await Auth.handleAuthFailure();
       return false;
@@ -1670,7 +1687,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (!Auth.isGuest() && App.data.workerUrl) {
     Sync.start();
-    Sync.pull().then(() => { renderTree(); renderTabs(); });
+    Sync.pull().then(r => {
+      if (r?.migrated) return;     // handled by onAccountMigrated
+      renderTree();
+      renderTabs();
+    });
   }
 
   if (typeof Auth.bootCheck === 'function') await Auth.bootCheck();

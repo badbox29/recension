@@ -450,6 +450,19 @@ const Sync = (() => {
       cursor = r.data?.cursor || null;
     } while (cursor);
 
+    // An empty listing is ambiguous: brand-new account, or a token whose
+    // account was migrated out from under it. Only one of those is worth
+    // interrupting the user about, so ask before assuming.
+    if (!Object.keys(remote).length && !C.isGuest()) {
+      const movedTo = await checkAccountMigrated();
+      if (movedTo) {
+        stop();                       // no point retrying a dead token
+        C.onStatus('error', 'Account moved');
+        C.onAccountMigrated?.(movedTo);
+        return { ok: false, migrated: movedTo };
+      }
+    }
+
     // 2. Tombstones first, so we don't fetch records that are already deleted.
     let tombs = await metaGet('tombstones', {});
     if (remote[TOMB_KEY]) {
@@ -516,11 +529,34 @@ const Sync = (() => {
     return { ok: true, fetched: done };
   }
 
+  /**
+   * checkAccountMigrated() — has this token been upgraded to Google?
+   *
+   * /auth/migrate copies everything to the Google identity and then
+   * DELETES the source key space, leaving a `migrated:` tombstone. Any
+   * device still holding the old token is now pointed at nothing.
+   *
+   * The worker signals this as 410 + X-Account-Migrated, but only on a GET
+   * of the account key. A key listing just comes back empty — which is
+   * indistinguishable from a new account — so a device that only ever
+   * lists would sync silently forever against a dead token. Ask directly.
+   */
+  async function checkAccountMigrated() {
+    const r = await request('GET', `/storage/${tokenPath()}/${ACCOUNT_KEY}`);
+    if (r.status === 410) return r.res?.headers.get('X-Account-Migrated') || 'google';
+    return null;
+  }
+
   async function pullAccount() {
     const r = await withAuthRetry(() => request('GET', `/storage/${tokenPath()}/${ACCOUNT_KEY}`));
 
     // 410 → this token was migrated to Google. Hand off to the host.
-    if (r.status === 410) { C.onStatus('error', 'Account migrated'); return false; }
+    if (r.status === 410) {
+      stop();
+      C.onStatus('error', 'Account moved');
+      C.onAccountMigrated?.(r.res?.headers.get('X-Account-Migrated') || 'google');
+      return false;
+    }
     if (!r.ok) return false;
 
     const value = r.data?.value;
@@ -653,6 +689,7 @@ const Sync = (() => {
     pull,
     freshDeviceSync,
     scheduleFlush,
+    checkAccountMigrated,
 
     // Blobs (R2)
     putBlob, getBlob, deleteBlob, listBlobs,
