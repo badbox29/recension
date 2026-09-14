@@ -928,17 +928,9 @@ html[data-size="lg"] { --prose-size: 1.1875rem; --prose-leading: 1.78; }
 .field-row .ghost-btn { flex: none; }
 
 /* ── Typewriter mode ───────────────────────────────────────────────
-   Slack above and below the text so any line — the first one included —
-   can be brought to the caret's resting height. Without the top padding
-   the target is simply unreachable near the start of a scene: the caret
-   sits above it and scrollTop is already 0. */
+   Slack BELOW the text only, so the last lines can still be pulled up to
+   the hold line. Nothing above: a scene opens at the top, fills down to
+   the hold line, and only then starts scrolling. */
 
-html.typewriter .prose  { padding-top: 34vh; padding-bottom: 62vh; }
-html.typewriter .scene  { padding-bottom: 0; }
-
-/* The scene heading scrolls away above the writing line, as it should —
-   but keep the gap smaller on short screens, where 34vh of blank is most
-   of the window. */
-@media (max-height: 40rem) {
-  html.typewriter .prose { padding-top: 26vh; padding-bottom: 70vh; }
-}
+html.typewriter .prose { padding-bottom: 62vh; }
+html.typewriter .scene { padding-bottom: 0; }
