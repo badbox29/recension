@@ -730,3 +730,17 @@ svg { width: 1.125rem; height: 1.125rem; fill: none;
 .toc-chapter.loose { padding-left: 0.375rem; font-size: var(--t-md); font-weight: 600; }
 
 .toc-add-chapter { padding-left: 1.125rem; }
+
+/* Name prompt — a single field, so it gets the prose face and room to breathe. */
+.name-input {
+  font-family: var(--prose);
+  font-size: var(--t-lg);
+  width: 100%;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  padding: 0.25rem 0 0.4375rem;
+}
+.name-input:focus { outline: none; border-bottom-color: var(--ink); }
+.name-input::placeholder { color: var(--ink-faint); }
