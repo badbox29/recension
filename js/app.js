@@ -48,6 +48,9 @@ const App = {
   // which is why this is two modes and not three.
   view: 'edit',
   readScope: { kind: 'all', id: null },
+  section: 'manuscript',   // which rail is showing: manuscript | cards
+  activeCard: null,
+  lastCardType: 'character',
   readReturn: null,    // where to land when coming back from an edit
 };
 
@@ -438,8 +441,11 @@ function startRename(labelEl, kind, id, current) {
     delete labelEl.dataset.editing;
     if (save && next && next !== current) {
       const rec = await RecordStore.get(kind, id);
-      if (rec) await RecordStore.put(kind, id, { ...rec, title: next });
+      // Cards carry a name, everything else a title.
+      if (rec) await RecordStore.put(kind, id, kind === 'card'
+        ? { ...rec, name: next } : { ...rec, title: next });
       await renderTree();
+      if (App.section === 'cards') await renderCards();
       renderTabs();
       refreshSyncState();
     }
@@ -465,9 +471,21 @@ function confirmDelete(kind, id, title) {
     book:    `Delete "${name}"? Its chapters stay, moved to the top level.`,
     chapter: `Delete "${name}"? Its scenes stay, moved to Unplaced.`,
     scene:   `Delete "${name}"? The text in it is lost.`,
+    card:    `Delete "${name}"? The manuscript is untouched.`,
   }[kind];
 
   showConfirm(message, async () => {
+    if (kind === 'card') {
+      await RecordStore.remove('card', id);
+      if (App.activeCard?.id === id) {
+        App.activeCard = null;
+        $('card-edit').hidden = true;
+        showEmpty();
+      }
+      await renderCards();
+      refreshSyncState();
+      return;
+    }
     if (kind === 'book')    await RecordStore.deleteBook(id);
     if (kind === 'chapter') await RecordStore.deleteChapter(id);
     if (kind === 'scene') {
@@ -1011,6 +1029,9 @@ async function openScene(id) {
   saveAccount();
 
   App.view = 'edit';
+  await flushActiveCard();
+  App.activeCard = null;
+  $('card-edit').hidden = true;
   $('readview').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
@@ -1396,6 +1417,199 @@ async function exportBackup() {
   showToast('Backup downloaded.');
 }
 
+// ══ Cards ══════════════════════════════════════════════════════════
+//
+// The reference layer: people, places, factions, objects, research.
+// This is the half Scrivener doesn't really have — it keeps documents,
+// not records, so nothing can answer "who appears where".
+//
+// FIELDS ARE FREE-FORM, on purpose. A character sheet for a spy thriller
+// and one for a family saga share almost nothing; a fixed schema would be
+// wrong for most books and unfixable for all of them. New cards get a few
+// suggested fields as a starting point, and every one can be renamed or
+// deleted.
+
+// Starting fields per type. Suggestions, not structure — they exist so a
+// blank card isn't an empty box, and they're deletable like any other.
+const CARD_STARTERS = {
+  character: ['Role', 'Age', 'Appearance', 'Wants', 'Fears'],
+  location:  ['Region', 'Feel', 'Significance'],
+  faction:   ['Allegiance', 'Strength', 'Goal'],
+  item:      ['Origin', 'Significance'],
+  research:  ['Source'],
+};
+
+const CARD_TYPE_LABEL = {
+  character: 'Characters', location: 'Places', faction: 'Factions',
+  item: 'Objects', research: 'Research',
+};
+
+function railSection(name) {
+  App.section = name;
+  for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
+    b.setAttribute('aria-selected', String(b.dataset.section === name));
+  $('toc').hidden        = name !== 'manuscript';
+  $('card-list').hidden  = name !== 'cards';
+  $('btn-new-part').hidden = name !== 'manuscript';
+  $('btn-new-card').hidden = name !== 'cards';
+  saveLocal();
+  return name === 'cards' ? renderCards() : renderTree();
+}
+
+async function renderCards() {
+  const list = $('card-list');
+  list.replaceChildren();
+
+  const cards = Object.values(await RecordStore.getAll('card'));
+  if (!cards.length) {
+    list.append(el('p', 'rail-hint',
+      'No cards yet. Characters, places, factions \u2014 anything worth keeping straight.'));
+    return;
+  }
+
+  // Grouped by type, alphabetical within a group. Cards have no inherent
+  // order the way scenes do, so alphabetical is the only stable answer.
+  for (const type of RecordStore.CARD_TYPES) {
+    const group = cards.filter(c => c.cardType === type)
+                       .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
+    if (!group.length) continue;
+
+    list.append(el('div', 'toc-group-label', CARD_TYPE_LABEL[type] || type));
+    for (const c of group) {
+      const row = tocLine('button', {
+        className: 'toc-scene card-row',
+        kind: 'card', id: c.id,
+        title: c.name,
+        figure: (c.tags || []).length ? String(c.tags.length) : null,
+        current: App.activeCard?.id === c.id,
+        onOpen: () => { openCard(c.id); if (App.readOnly) closeRail(); },
+      });
+      list.append(row);
+    }
+  }
+}
+
+async function newCard() {
+  const name = await askName('New card', 'Name');
+  if (!name) return;
+  const type = App.lastCardType || 'character';
+  const id = await RecordStore.createCard(type, name);
+  if (!id) return;
+  // Seed the suggested fields so the card opens with somewhere to type.
+  const rec = await RecordStore.get('card', id);
+  const fields = {};
+  for (const k of CARD_STARTERS[type] || []) fields[k] = '';
+  await RecordStore.put('card', id, { ...rec, fields });
+  await renderCards();
+  openCard(id);
+}
+
+async function openCard(id) {
+  await flushActiveScene();
+  await flushActiveCard();
+
+  const c = await RecordStore.get('card', id);
+  if (!c) { showToast('That card is gone.'); return renderCards(); }
+
+  App.activeCard = c;
+  App.activeScene = null;
+  App.view = 'edit';
+
+  $('readview').hidden = true;
+  $('empty').hidden = true;
+  $('scene').hidden = true;
+  $('card-edit').hidden = false;
+  $('btn-read').setAttribute('aria-pressed', 'false');
+
+  $('card-name').value = c.name || '';
+  $('card-type').value = c.cardType || 'character';
+  $('card-tags').value = (c.tags || []).join(', ');
+  $('card-aka').value  = (c.aka || []).join(', ');
+  $('card-body').value = c.body || '';
+  renderCardFields(c.fields || {});
+
+  $('tally').textContent = '';
+  renderCards();
+  $('sheet').scrollTop = 0;
+}
+
+// Field rows. The key is editable too — renaming "Role" to "Rank" should
+// not require deleting and re-adding.
+function renderCardFields(fields) {
+  const wrap = $('card-fields');
+  wrap.replaceChildren();
+
+  for (const [key, value] of Object.entries(fields)) {
+    const row = el('div', 'card-field');
+
+    const k = el('input', 'cf-key');
+    k.value = key;
+    k.setAttribute('aria-label', 'Field name');
+    k.addEventListener('change', scheduleCardSave);
+
+    const v = el('input', 'cf-value');
+    v.value = value ?? '';
+    v.setAttribute('aria-label', key);
+    v.addEventListener('input', scheduleCardSave);
+
+    const del = el('button', 'cf-del', '\u00D7');
+    del.type = 'button';
+    del.setAttribute('aria-label', `Remove ${key}`);
+    del.addEventListener('click', () => { row.remove(); flushActiveCard(); });
+
+    row.append(k, v, del);
+    wrap.append(row);
+  }
+}
+
+function readCardFields() {
+  const out = {};
+  for (const row of document.querySelectorAll('#card-fields .card-field')) {
+    const k = row.querySelector('.cf-key').value.trim();
+    if (!k) continue;                       // a nameless field is not a field
+    out[k] = row.querySelector('.cf-value').value.trim();
+  }
+  return out;
+}
+
+function splitList(s) {
+  return (s || '').split(',').map(x => x.trim()).filter(Boolean);
+}
+
+let _cardSaveTimer = null;
+function scheduleCardSave() {
+  setSyncState('dirty');
+  clearTimeout(_cardSaveTimer);
+  _cardSaveTimer = setTimeout(() => flushActiveCard(), SAVE_DEBOUNCE);
+}
+
+async function flushActiveCard() {
+  clearTimeout(_cardSaveTimer);
+  const c = App.activeCard;
+  if (!c || $('card-edit').hidden) return;
+
+  const next = {
+    ...c,
+    name:     $('card-name').value.trim() || 'Untitled',
+    cardType: $('card-type').value,
+    tags:     splitList($('card-tags').value),
+    aka:      splitList($('card-aka').value),
+    body:     $('card-body').value,
+    fields:   readCardFields(),
+  };
+
+  // Same guard as scenes: don't bump updatedAt or queue a sync for a card
+  // that was only looked at.
+  const same = JSON.stringify(next) === JSON.stringify(c);
+  if (same) { refreshSyncState(); return; }
+
+  await RecordStore.put('card', c.id, next);
+  App.activeCard = { ...next };
+  App.lastCardType = next.cardType;
+  await renderCards();
+  refreshSyncState();
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -1556,6 +1770,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
   $('btn-new-part').addEventListener('click', newPart);
+  $('btn-new-card').addEventListener('click', newCard);
+  for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
+    b.addEventListener('click', () => railSection(b.dataset.section));
+
+  for (const id of ['card-name', 'card-tags', 'card-aka', 'card-body'])
+    $(id).addEventListener('input', scheduleCardSave);
+  $('card-type').addEventListener('change', () => flushActiveCard());
+  $('btn-add-field').addEventListener('click', () => {
+    const fields = readCardFields();
+    fields[''] = '';                       // an empty row to type into
+    renderCardFields(fields);
+    document.querySelector('#card-fields .card-field:last-child .cf-key')?.focus();
+  });
   $('btn-empty-new').addEventListener('click', async () => {
     const id = await RecordStore.createScene(null);
     if (id) { await renderTree(); openScene(id); }
@@ -1678,7 +1905,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   window.matchMedia(NARROW_QUERY).addEventListener('change', applyMode);
-  window.addEventListener('beforeunload', () => { flushActiveScene(); });
+  window.addEventListener('beforeunload', () => { flushActiveScene(); flushActiveCard(); });
 
   // ── Start ───────────────────────────────────────────────────────
 
