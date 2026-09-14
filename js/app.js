@@ -1074,6 +1074,37 @@ function toggleRail() {
 
 // ── Settings ───────────────────────────────────────────────────────
 
+// Which tab was last open, remembered per device. Coming back to Settings
+// and landing somewhere other than where you left is a small, repeated
+// irritation.
+let _settingsTab = 'interface';
+
+function showSettingsTab(name) {
+  _settingsTab = name;
+  for (const b of document.querySelectorAll('.set-tabs [role="tab"]'))
+    b.setAttribute('aria-selected', String(b.dataset.panel === name));
+  for (const p of document.querySelectorAll('.set-panel'))
+    p.hidden = p.id !== `panel-${name}`;
+  document.querySelector('#modal-settings .modal-body').scrollTop = 0;
+}
+
+function bindSettingsTabs() {
+  const tabs = [...document.querySelectorAll('.set-tabs [role="tab"]')];
+  tabs.forEach((b, i) => {
+    b.addEventListener('click', () => showSettingsTab(b.dataset.panel));
+    // Arrow keys move between tabs, as a tablist should.
+    b.addEventListener('keydown', e => {
+      const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      const next = tabs[(i + d + tabs.length) % tabs.length];
+      next.focus();
+      showSettingsTab(next.dataset.panel);
+    });
+  });
+}
+
+
 function openSettings() {
   $('set-dark').checked = document.documentElement.classList.contains('dark');
   $('set-typewriter').checked = !!App.data.typewriter;
@@ -1092,6 +1123,7 @@ function openSettings() {
   // click and then explains itself, which is worse than not being there.
   $('account-actions').style.display = Auth.isGuest() ? 'none' : '';
   loadAuthorFields();
+  showSettingsTab(_settingsTab);
   openModal('modal-settings');
 }
 
@@ -1442,6 +1474,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadTypography();
   syncTypePopover();
   bindAuthorFields();
+  bindSettingsTabs();
   applyTypewriterMode(App.data.typewriter);
 
   $('btn-contents').addEventListener('click', toggleRail);
