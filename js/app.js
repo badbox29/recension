@@ -286,6 +286,66 @@ function openRowMenu(anchor, kind, id, title) {
   _menu = menu;
 }
 
+// ── Name prompt ────────────────────────────────────────────────────
+//
+// Used when creating a part or chapter. Naming at creation beats creating
+// an "Untitled" record and hunting for the rename: the structural level
+// only exists because you had a name in mind for it.
+//
+// Built in JS rather than markup so the modal lives next to its only
+// caller. Returns the trimmed name, or null if cancelled.
+
+function askName(heading, placeholder, initial = '') {
+  return new Promise(resolve => {
+    const overlay = el('div', 'modal-overlay');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+
+    const modal = el('div', 'modal modal-sm');
+    const head  = el('div', 'modal-header');
+    head.append(el('h2', 'modal-title', heading));
+
+    const body  = el('div', 'modal-body');
+    const input = el('input', 'name-input');
+    input.placeholder = placeholder;
+    input.value = initial;
+    input.setAttribute('aria-label', heading);
+
+    const actions = el('div', 'modal-actions');
+    const cancel  = el('button', 'ghost-btn', 'Cancel');
+    const create  = el('button', 'solid-btn', 'Create');
+
+    let settled = false;
+    const done = value => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    };
+    const submit = () => done(input.value.trim() || null);
+
+    cancel.addEventListener('click', () => done(null));
+    create.addEventListener('click', submit);
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) done(null); });
+
+    // Captured, so Escape closes this and not whatever is underneath it.
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); done(null); }
+      if (e.key === 'Enter' && document.activeElement === input) { e.preventDefault(); submit(); }
+    }
+    document.addEventListener('keydown', onKey, true);
+
+    actions.append(cancel, create);
+    body.append(input, actions);
+    modal.append(head, body);
+    overlay.append(modal);
+    document.body.append(overlay);
+    input.focus();
+    input.select();
+  });
+}
+
 // ── Inline rename ──────────────────────────────────────────────────
 // Swaps the title span for an input in place. A prompt() dialog would be
 // fewer lines but throws you out of the page you're reading.
@@ -384,29 +444,27 @@ async function renderTree() {
     for (const ch of book.chapters) toc.append(...chapterRows(ch, 'toc-chapter'));
 
     const addCh = el('button', 'toc-add toc-add-chapter', '+ chapter');
-    addCh.addEventListener('click', async () => {
-      await RecordStore.createChapter(book.id);
-      renderTree();
-    });
+    addCh.addEventListener('click', () => newChapter(book.id));
     toc.append(addCh);
   }
 
   // Chapters with no part. Parts are optional — see createChapter().
   for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
 
-  if (App.tree.unfiled.length) {
-    toc.append(el('div', 'toc-group-label', 'Unplaced'));
-    for (const sc of App.tree.unfiled) toc.append(sceneRow(sc));
+  // A top-level "+ chapter" only when there are no parts. With parts on the
+  // page it would be ambiguous which one it adds to, and each part already
+  // carries its own — that ambiguity was the duplicate button.
+  if (!App.tree.books.length) {
+    const addLoose = el('button', 'toc-add toc-add-chapter', '+ chapter');
+    addLoose.addEventListener('click', () => newChapter(null));
+    toc.append(addLoose);
   }
 
-  const addLoose = el('button', 'toc-add toc-add-chapter', '+ chapter');
-  addLoose.addEventListener('click', async () => {
-    await RecordStore.createChapter(null);
-    renderTree();
-  });
-  toc.append(addLoose);
-
-  const addScene = el('button', 'toc-add toc-add-chapter', '+ scene');
+  // Unplaced scenes and their add action stay together, so "+ scene" here
+  // reads as "add to Unplaced" rather than as a second global button.
+  toc.append(el('div', 'toc-group-label', 'Unplaced'));
+  for (const sc of App.tree.unfiled) toc.append(sceneRow(sc));
+  const addScene = el('button', 'toc-add', '+ scene');
   addScene.addEventListener('click', async () => {
     const id = await RecordStore.createScene(null);
     if (id) { await renderTree(); openScene(id); }
@@ -441,6 +499,20 @@ function chapterRows(ch, className) {
   });
   rows.push(add);
   return rows;
+}
+
+async function newPart() {
+  const name = await askName('New part', 'Part One');
+  if (!name) return;
+  await RecordStore.createBook(name);
+  renderTree();
+}
+
+async function newChapter(bookId) {
+  const name = await askName('New chapter', 'Chapter One');
+  if (!name) return;
+  await RecordStore.createChapter(bookId, name);
+  renderTree();
 }
 
 function sceneRow(sc) {
@@ -766,14 +838,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
-  // Creating a part immediately opens its name for editing — a structural
-  // level you can't name is worse than no button at all.
-  $('btn-new-part').addEventListener('click', async () => {
-    const id = await RecordStore.createBook('Untitled part');
-    await renderTree();
-    const label = document.querySelector(`[data-id="${id}"] .toc-title`);
-    if (label) startRename(label, 'book', id, 'Untitled part');
-  });
+  $('btn-new-part').addEventListener('click', newPart);
   $('btn-empty-new').addEventListener('click', async () => {
     const id = await RecordStore.createScene(null);
     if (id) { await renderTree(); openScene(id); }
