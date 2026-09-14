@@ -1433,10 +1433,15 @@ async function exportBackup() {
 // blank card isn't an empty box, and they're deletable like any other.
 const CARD_STARTERS = {
   character: ['Role', 'Age', 'Appearance', 'Wants', 'Fears'],
-  location:  ['Region', 'Feel', 'Significance'],
-  faction:   ['Allegiance', 'Strength', 'Goal'],
-  item:      ['Origin', 'Significance'],
-  research:  ['Source'],
+  location:  ['Region', 'Terrain', 'Feel', 'Significance'],
+  faction:   ['Purpose', 'Allegiance', 'Leadership', 'Reach', 'Founded'],
+  item:      ['Origin', 'Owner', 'Significance'],
+  research:  ['Source', 'Relevance'],
+};
+
+const CARD_TYPE_SINGULAR = {
+  character: 'character', location: 'place', faction: 'faction',
+  item: 'object', research: 'research note',
 };
 
 const CARD_TYPE_LABEL = {
@@ -1461,47 +1466,53 @@ async function renderCards() {
   list.replaceChildren();
 
   const cards = Object.values(await RecordStore.getAll('card'));
-  if (!cards.length) {
-    list.append(el('p', 'rail-hint',
-      'No cards yet. Characters, places, factions \u2014 anything worth keeping straight.'));
-    return;
-  }
 
-  // Grouped by type, alphabetical within a group. Cards have no inherent
-  // order the way scenes do, so alphabetical is the only stable answer.
+  // Every type is always shown, with its own add link underneath — the
+  // same shape as the Contents tab, where "+ scene" sits under the
+  // chapter it adds to. Choosing the type by WHICH link you click also
+  // fixes a real bug: card creation used to guess the type from whatever
+  // you made last, seed that type's fields, and then leave you to change
+  // the dropdown afterwards — which didn't reseed anything.
   for (const type of RecordStore.CARD_TYPES) {
     const group = cards.filter(c => c.cardType === type)
                        .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
-    if (!group.length) continue;
 
     list.append(el('div', 'toc-group-label', CARD_TYPE_LABEL[type] || type));
+
     for (const c of group) {
-      const row = tocLine('button', {
+      list.append(tocLine('button', {
         className: 'toc-scene card-row',
         kind: 'card', id: c.id,
         title: c.name,
         figure: (c.tags || []).length ? String(c.tags.length) : null,
         current: App.activeCard?.id === c.id,
         onOpen: () => { openCard(c.id); if (App.readOnly) closeRail(); },
-      });
-      list.append(row);
+      }));
     }
+
+    const add = el('button', 'toc-add', `+ ${CARD_TYPE_SINGULAR[type] || type}`);
+    add.addEventListener('click', () => newCard(type));
+    list.append(add);
   }
 }
 
-async function newCard() {
-  const name = await askName('New card', 'Name');
+async function newCard(type = 'character') {
+  const name = await askName(`New ${CARD_TYPE_SINGULAR[type] || 'card'}`, 'Name');
   if (!name) return;
-  const type = App.lastCardType || 'character';
+
   const id = await RecordStore.createCard(type, name);
   if (!id) return;
-  // Seed the suggested fields so the card opens with somewhere to type.
+
   const rec = await RecordStore.get('card', id);
-  const fields = {};
-  for (const k of CARD_STARTERS[type] || []) fields[k] = '';
-  await RecordStore.put('card', id, { ...rec, fields });
+  await RecordStore.put('card', id, { ...rec, fields: startersFor(type) });
   await renderCards();
   openCard(id);
+}
+
+function startersFor(type) {
+  const fields = {};
+  for (const k of CARD_STARTERS[type] || []) fields[k] = '';
+  return fields;
 }
 
 async function openCard(id) {
@@ -1526,6 +1537,7 @@ async function openCard(id) {
   $('card-tags').value = (c.tags || []).join(', ');
   $('card-aka').value  = (c.aka || []).join(', ');
   $('card-body').value = c.body || '';
+  autoGrow($('card-body'));
   renderCardFields(c.fields || {});
 
   $('tally').textContent = '';
@@ -1547,10 +1559,20 @@ function renderCardFields(fields) {
     k.setAttribute('aria-label', 'Field name');
     k.addEventListener('change', scheduleCardSave);
 
-    const v = el('input', 'cf-value');
+    // A textarea, not an input: "Mexico's counter-cyber terrorism service"
+    // does not fit on one line, and a field you can't read the whole of is
+    // worse than no field. Grows to its content, never scrolls internally.
+    const v = el('textarea', 'cf-value');
     v.value = value ?? '';
+    v.rows = 1;
     v.setAttribute('aria-label', key);
-    v.addEventListener('input', scheduleCardSave);
+    v.addEventListener('input', () => { autoGrow(v); scheduleCardSave(); });
+    // Enter commits rather than inserting a newline — these are field
+    // values, not prose. Shift+Enter still breaks the line for an address
+    // or a list.
+    v.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); v.blur(); }
+    });
 
     const del = el('button', 'cf-del', '\u00D7');
     del.type = 'button';
@@ -1559,7 +1581,15 @@ function renderCardFields(fields) {
 
     row.append(k, v, del);
     wrap.append(row);
+    autoGrow(v);
   }
+}
+
+// Height follows content. Reset to auto first, or the box can only ever
+// grow — scrollHeight includes the height already set.
+function autoGrow(node) {
+  node.style.height = 'auto';
+  node.style.height = `${node.scrollHeight}px`;
 }
 
 function readCardFields() {
@@ -1776,7 +1806,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   for (const id of ['card-name', 'card-tags', 'card-aka', 'card-body'])
     $(id).addEventListener('input', scheduleCardSave);
-  $('card-type').addEventListener('change', () => flushActiveCard());
+  $('card-body').addEventListener('input', () => autoGrow($('card-body')));
+  // Changing a card's type adds the new type's starter fields if they're
+  // missing. Additive only: nothing you typed is removed, and unwanted
+  // rows delete like any other.
+  $('card-type').addEventListener('change', async () => {
+    const type = $('card-type').value;
+    const current = readCardFields();
+    let added = 0;
+    for (const k of CARD_STARTERS[type] || []) {
+      if (!(k in current)) { current[k] = ''; added++; }
+    }
+    if (added) renderCardFields(current);
+    await flushActiveCard();
+    if (added) showToast(`Added ${added} ${CARD_TYPE_SINGULAR[type]} field${added === 1 ? '' : 's'}.`);
+  });
   $('btn-add-field').addEventListener('click', () => {
     const fields = readCardFields();
     fields[''] = '';                       // an empty row to type into
