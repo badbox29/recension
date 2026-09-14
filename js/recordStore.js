@@ -181,6 +181,10 @@ const RecordStore = (() => {
   //   w  word count   scenes only
   //   s  status       scenes only
   //   p  parent id    chapterId / bookId — lets the tree rebuild from metadata
+  //   o  order        LOCAL ONLY — stripped before the entry becomes KV
+  //                   metadata. The tree can't render without it, and
+  //                   re-reading every body just to sort was a full
+  //                   manuscript load on every tree render.
 
   function indexEntry(type, rec) {
     const e = { u: rec.updatedAt || 0 };
@@ -189,11 +193,14 @@ const RecordStore = (() => {
       e.w = rec.wordCount || 0;
       e.s = rec.status || 'draft';
       e.p = rec.chapterId || '';
+      e.o = rec.order || 0;
     } else if (type === 'chapter') {
       e.t = rec.title || '';
       e.p = rec.bookId || '';
+      e.o = rec.order || 0;
     } else if (type === 'book') {
       e.t = rec.title || '';
+      e.o = rec.order || 0;
     } else if (type === 'card') {
       e.t = rec.name || '';
       e.s = rec.cardType || '';
@@ -368,25 +375,22 @@ const RecordStore = (() => {
 
   /**
    * getTree() — the whole manuscript structure, bodies excluded.
-   * Built from the index store, so this is cheap enough to call on render.
+   *
+   * Reads ONLY the index store. No scene body is deserialized, so this stays
+   * cheap at 150k words and is safe to call on every render.
    */
   async function getTree() {
     const idx = await getIndex();
     const books = [], chapters = [], scenes = [];
     for (const [k, e] of Object.entries(idx)) {
       const [type, id] = splitKey(k);
-      if (type === 'book')         books.push({ id, title: e.t, updatedAt: e.u });
-      else if (type === 'chapter') chapters.push({ id, title: e.t, bookId: e.p, updatedAt: e.u });
+      if (type === 'book')         books.push({ id, title: e.t, order: e.o || 0, updatedAt: e.u });
+      else if (type === 'chapter') chapters.push({ id, title: e.t, bookId: e.p,
+                                                   order: e.o || 0, updatedAt: e.u });
       else if (type === 'scene')   scenes.push({ id, title: e.t, chapterId: e.p || null,
-                                                 wordCount: e.w, status: e.s, updatedAt: e.u });
+                                                 wordCount: e.w, status: e.s,
+                                                 order: e.o || 0, updatedAt: e.u });
     }
-    // The index doesn't carry `order` (it's not needed for sync and metadata
-    // is byte-capped), so pull it from the records for the tree view only.
-    const [bRec, cRec, sRec] = await Promise.all([getAll('book'), getAll('chapter'), getAll('scene')]);
-    for (const b of books)    b.order = bRec[b.id]?.order || 0;
-    for (const c of chapters) c.order = cRec[c.id]?.order || 0;
-    for (const s of scenes)   s.order = sRec[s.id]?.order || 0;
-
     return {
       books: sortByOrder(books).map(b => ({
         ...b,
@@ -482,7 +486,9 @@ const RecordStore = (() => {
         for (const [k, e] of Object.entries(idx)) out[k] = e.u || 0;
         return out;
       },
-      buildMeta: (type, rec) => indexEntry(type, rec),
+      // `o` (order) is local-only: the tree needs it, KV metadata is
+      // byte-capped, and order already travels inside the record itself.
+      buildMeta: (type, rec) => { const { o, ...meta } = indexEntry(type, rec); return meta; },
     };
   }
 
