@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Recension</title>
+<meta name="description" content="Draft, revise, and keep the continuity of a novel." />
+<meta name="theme-color" content="#E7E8E3" />
+
+<script src="https://accounts.google.com/gsi/client" async
+        onload="window.gisReady=true;window.dispatchEvent(new Event('gis-ready'))"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,600;1,400&display=swap" />
+
+<link rel="stylesheet" href="js/vendor/easymde.min.css" />
+<link rel="stylesheet" href="css/styles.css" />
+
+<!-- Applied before first paint so the page never flashes light then dark. -->
+<script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
+</head>
+<body>
+
+<!-- ── Top bar ──────────────────────────────────────────────────────── -->
+<header class="bar">
+  <button class="icon-btn" id="btn-contents" aria-label="Show contents" aria-expanded="false">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h9"/></svg>
+  </button>
+
+  <span class="wordmark">Recension</span>
+
+  <nav class="tabs" id="tabs" aria-label="Open scenes"></nav>
+
+  <div class="bar-end">
+    <!-- Live word count. The one number a drafting session actually cares about. -->
+    <output class="tally" id="tally" aria-live="off"></output>
+    <span class="sync-dot" id="sync-dot" title="Saved" data-state="idle"></span>
+    <button class="icon-btn" id="btn-settings" aria-label="Settings">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2M10 15.4v2M17.4 10h-2M4.6 10h-2M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4M15.2 15.2l-1.4-1.4M6.2 6.2L4.8 4.8"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="frame">
+
+  <!-- ── Contents rail ──────────────────────────────────────────────── -->
+  <!-- Set as a printed table of contents: hanging indents, titles on the
+       left, figures on the right. Status is a rubric tick, not a pill. -->
+  <aside class="rail" id="rail" aria-label="Contents">
+    <div class="rail-head">
+      <h2>Contents</h2>
+      <button class="ghost-btn" id="btn-new-part">New part</button>
+    </div>
+    <div class="toc" id="toc"></div>
+    <div class="rail-foot">
+      <span id="rail-total"></span>
+    </div>
+  </aside>
+
+  <!-- Closes the rail on mobile without stealing the tap from the page. -->
+  <div class="scrim" id="scrim" hidden></div>
+
+  <!-- ── Manuscript ─────────────────────────────────────────────────── -->
+  <main class="sheet" id="sheet">
+
+    <div class="empty" id="empty">
+      <p class="empty-lead">No scene open.</p>
+      <p>Open one from the contents, or start a new one.</p>
+      <button class="solid-btn" id="btn-empty-new">Start a scene</button>
+    </div>
+
+    <article class="scene" id="scene" hidden>
+      <!-- Title is edited in place. A separate field for it would put a form
+           between the writer and the page. -->
+      <input class="scene-title" id="scene-title" placeholder="Untitled scene"
+             aria-label="Scene title" spellcheck="false" />
+
+      <div class="scene-meta">
+        <label class="meta-field">
+          <span>Point of view</span>
+          <input id="scene-pov" placeholder="—" />
+        </label>
+        <label class="meta-field">
+          <span>Status</span>
+          <select id="scene-status">
+            <option value="draft">Draft</option>
+            <option value="revised">Revised</option>
+            <option value="final">Final</option>
+          </select>
+        </label>
+        <label class="meta-field meta-wide">
+          <span>Synopsis</span>
+          <input id="scene-synopsis" placeholder="What happens here" />
+        </label>
+      </div>
+
+      <div class="prose" id="prose">
+        <textarea id="editor" aria-label="Scene text"></textarea>
+      </div>
+
+      <!-- Mobile and any read-only context render here instead of the editor. -->
+      <div class="reading" id="reading" hidden></div>
+    </article>
+  </main>
+</div>
+
+<!-- ── Account setup (filled by auth.js) ────────────────────────────── -->
+<div class="modal-overlay" id="modal-account-setup" role="dialog" aria-modal="true"
+     aria-labelledby="account-setup-title" hidden>
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 class="modal-title" id="account-setup-title"></h2>
+    </div>
+    <div class="modal-body" id="account-setup-body"></div>
+  </div>
+</div>
+
+<!-- ── Settings ─────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-settings" role="dialog" aria-modal="true"
+     aria-labelledby="settings-title" hidden>
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="settings-title">Settings</h2>
+      <button class="icon-btn" id="settings-close" aria-label="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+
+      <section class="set-block">
+        <h3>Reading</h3>
+        <label class="row">
+          <span>Dark theme</span>
+          <input type="checkbox" id="set-dark" />
+        </label>
+        <label class="row">
+          <span>Typewriter scrolling</span>
+          <input type="checkbox" id="set-typewriter" />
+        </label>
+      </section>
+
+      <section class="set-block">
+        <h3>Sync</h3>
+        <label class="row stack">
+          <span>Worker address</span>
+          <input id="set-worker" placeholder="https://recension-worker.you.workers.dev"
+                 spellcheck="false" autocapitalize="off" />
+        </label>
+        <p class="note" id="sync-note"></p>
+        <button class="ghost-btn" id="btn-sync-now">Sync now</button>
+      </section>
+
+      <!-- auth.js renders the account controls into this container. -->
+      <section class="set-block" id="auth-settings-section"></section>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── Confirm ──────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-confirm" role="dialog" aria-modal="true" hidden>
+  <div class="modal modal-sm">
+    <div class="modal-body">
+      <p id="confirm-message"></p>
+      <div class="modal-actions">
+        <button class="ghost-btn" id="confirm-cancel-btn">Cancel</button>
+        <button class="solid-btn danger" id="confirm-ok-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="js/vendor/easymde.min.js"></script>
+<script src="js/vendor/fflate.min.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/recordStore.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
