@@ -183,8 +183,39 @@
         <button class="ghost-btn" id="btn-sync-now">Sync now</button>
       </section>
 
-      <!-- auth.js renders the account controls into this container. -->
-      <section class="set-block" id="auth-settings-section"></section>
+      <!-- Account. auth.js shows/hides and fills these by id — the ids are
+           its interface, so don't rename them. Note that settings-worker-group
+           and settings-sync-controls are deliberately NOT used: auth.js would
+           hide them for guests, and the worker address has to be set BEFORE
+           an account can be created. -->
+      <section class="set-block" id="auth-settings-section">
+        <h3>Account <span class="auth-badge" id="settings-auth-badge"></span></h3>
+
+        <div id="settings-guest-section">
+          <p class="note">Your writing is on this device only. An account
+            syncs it to your worker and lets you open it elsewhere.</p>
+          <div class="btn-row">
+            <button class="solid-btn" id="btn-create-account">Create an account</button>
+            <button class="ghost-btn" id="btn-load-token">I have a token</button>
+          </div>
+        </div>
+
+        <div id="settings-token-group">
+          <p class="note">This token is the only way back into your account.
+            Save it somewhere you won't lose it.</p>
+          <div class="field-row">
+            <code class="token-display" id="settings-token-display">—</code>
+            <button class="ghost-btn" id="btn-copy-token">Copy</button>
+          </div>
+        </div>
+
+        <div id="settings-google-info"></div>
+
+        <div class="btn-row" style="margin-top:.75rem;">
+          <button class="ghost-btn" id="settings-upgrade-google">Switch to Google</button>
+          <button class="ghost-btn" id="btn-switch-account">Sign out</button>
+        </div>
+      </section>
 
     </div>
   </div>
