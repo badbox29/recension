@@ -877,52 +877,49 @@ function ensureEditor() {
 
 // ── Typewriter scrolling ───────────────────────────────────────────
 //
-// Holds the line you're typing at a fixed height on screen — the text
-// moves past a stationary caret, like a typewriter carriage — instead of
-// letting the caret walk down to the bottom edge.
+// Behaviour, deliberately in this order:
 //
-// Two things matter for getting this right:
+//   1. A scene opens at the top, as normal. No blank space, no jump.
+//   2. Text fills downward until the caret reaches the hold line (a little
+//      above centre).
+//   3. From there the caret STAYS PUT and the text scrolls up past it.
 //
-// 1. COORDINATE SPACE. CodeMirror runs here in auto-height mode with its
-//    own scrolling disabled; the scroller is #sheet. So getScrollInfo()
-//    reports the whole document's height, not a viewport, and 'local'
-//    cursor coords are relative to CodeMirror rather than the page.
-//    Everything below works in viewport coordinates and adjusts #sheet.
+// Two mistakes are easy to make here and I made both.
 //
-// 2. WHEN TO FIRE. Recentring on every keystroke makes the page twitch
-//    under you mid-word. It should only move when the caret changes LINE,
-//    which is the only time its height on screen actually changed.
+// COORDINATES. CodeMirror runs in auto-height mode with its own scrolling
+// disabled; #sheet is the scroller. getScrollInfo() therefore reports the
+// whole document height, not a viewport, and 'local' cursor coords are
+// relative to CodeMirror rather than the page. Everything below is in
+// viewport coordinates.
+//
+// WRAPPED LINES ARE NOT NEW LINES. Gating on cm.getCursor().line looks
+// right and is wrong: typing a long paragraph wraps across many visual
+// rows while the LOGICAL line number never changes, so the gate blocks
+// every scroll and the text just fills to the bottom. The only thing that
+// matters is the caret's pixel height, so that is what's measured.
 
-// The scroller needs slack at BOTH ends or the target height is
-// unreachable: at the top of a scene the caret sits above it with
-// scrollTop already 0, and at the end there's nothing below to pull up.
-// The padding is applied via a class so it only exists when the mode is on.
-function applyTypewriterMode(on) {
-  document.documentElement.classList.toggle('typewriter', !!on);
-  App.editor?.codemirror?.refresh();
-}
-
-let _lastCaretLine = -1;
+// Where the caret comes to rest, as a fraction of the visible height.
+// Slightly above centre — dead centre leaves so much blank below that it
+// reads as writing into a void.
+const TYPEWRITER_ANCHOR = 0.44;
 
 function typewriterScroll(force = false) {
   const cm = App.editor?.codemirror;
   if (!cm) return;
 
-  const line = cm.getCursor().line;
-  if (!force && line === _lastCaretLine) return;
-  _lastCaretLine = line;
-
   const sheet = $('sheet');
-  const caret = cm.cursorCoords(null, 'window');   // viewport coords
   const view  = sheet.getBoundingClientRect();
-
-  // Sit a little above true centre. Dead centre leaves so much blank space
-  // below the caret that it reads as writing into a void; 42% keeps a few
-  // lines of context visible underneath.
-  const target = view.top + view.height * 0.42;
+  const caret = cm.cursorCoords(null, 'window');   // viewport coords
+  const target = view.top + view.height * TYPEWRITER_ANCHOR;
   const delta  = caret.top - target;
 
-  if (Math.abs(delta) < 2) return;                 // ignore sub-pixel drift
+  // Above the hold line: let the page fill normally. This is what makes a
+  // fresh scene start at the top instead of in the middle of nowhere.
+  // `force` overrides it — opening an existing scene pulls the caret up to
+  // the hold line so you carry on writing from there.
+  if (!force && delta <= 0) return;
+  if (Math.abs(delta) < 1) return;
+
   sheet.scrollTop += delta;
 }
 
@@ -1017,8 +1014,13 @@ async function openScene(id) {
     }
     cm.refresh();
     cm.clearHistory();   // undo must not cross scene boundaries
-    _lastCaretLine = -1; // a new scene starts a fresh caret-line memo
-    if (App.data.typewriter) requestAnimationFrame(() => typewriterScroll(true));
+    // Opening an existing scene with text in it: put the caret at the end
+    // and pull it up to the hold line, so you resume writing from there
+    // rather than from the top of the page.
+    if (App.data.typewriter && (sc.body || '').length) {
+      cm.setCursor(cm.lineCount(), 0);
+      requestAnimationFrame(() => typewriterScroll(true));
+    }
   }
 
   updateTally();
