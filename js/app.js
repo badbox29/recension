@@ -62,6 +62,14 @@ function defaultData() {
     workerUrl:    '',
     linkedGoogle: null,
     firstName: '', lastName: '', username: '',
+    // Author identity, used by title pages and manuscript headers. Kept
+    // separate from account fields: auth.js owns firstName/lastName for
+    // the sign-in wizard, this is the publishing identity.
+    author: {
+      first: '', middle: '', last: '', pen: '',
+      address: '', email: '', phone: '',
+      agent: '', agentContact: '', copyright: '',
+    },
     tabState:  { openIds: [], activeId: null },
     tocState:  { collapsedIds: [] },
     typewriter: false,
@@ -73,6 +81,7 @@ function mergeData(raw) {
   if (!raw || typeof raw !== 'object') return d;
   return {
     ...d, ...raw,
+    author: { ...d.author, ...(raw.author && typeof raw.author === 'object' ? raw.author : {}) },
     tabState: (raw.tabState && typeof raw.tabState === 'object')
       ? { openIds: Array.isArray(raw.tabState.openIds) ? raw.tabState.openIds : [],
           activeId: raw.tabState.activeId ?? null }
@@ -96,6 +105,7 @@ function accountForSync() {
     authMethod: d.authMethod,
     linkedGoogle: d.linkedGoogle,
     firstName: d.firstName, lastName: d.lastName, username: d.username,
+    author: d.author,
     tabState: d.tabState,
     tocState: d.tocState,
     typewriter: d.typewriter,
@@ -1075,6 +1085,11 @@ function openSettings() {
   });
 
   if (typeof Auth?.renderSettingsSection === 'function') Auth.renderSettingsSection();
+  // Sync and account actions are meaningless as a guest — there's nothing
+  // to sync with yet. Hide rather than disable: a dead button invites a
+  // click and then explains itself, which is worse than not being there.
+  $('account-actions').style.display = Auth.isGuest() ? 'none' : '';
+  loadAuthorFields();
   openModal('modal-settings');
 }
 
@@ -1120,6 +1135,38 @@ async function saveWorkerUrl() {
   } catch {
     note.textContent = 'Saved, but that address did not answer. Check it and your connection.';
   }
+}
+
+// ── Author details ─────────────────────────────────────────────────
+// Saved on blur rather than per keystroke: these are typed once and
+// rarely touched, so there's no reason to queue a sync on every letter.
+
+const AUTHOR_FIELDS = {"au-first": "first", "au-middle": "middle", "au-last": "last", "au-pen": "pen", "au-address": "address", "au-email": "email", "au-phone": "phone", "au-agent": "agent", "au-agent-contact": "agentContact", "au-copyright": "copyright"};
+
+function loadAuthorFields() {
+  for (const [id, key] of Object.entries(AUTHOR_FIELDS)) {
+    const node = $(id);
+    if (node) node.value = App.data.author?.[key] || '';
+  }
+}
+
+function bindAuthorFields() {
+  for (const [id, key] of Object.entries(AUTHOR_FIELDS)) {
+    const node = $(id);
+    if (!node) continue;
+    node.addEventListener('change', () => {
+      App.data.author = { ...App.data.author, [key]: node.value.trim() };
+      saveAccount();
+    });
+  }
+}
+
+// authorByline() — what goes under a title. Falls back through byline,
+// full name, then nothing, so a title page never prints a stray comma.
+function authorByline() {
+  const a = App.data.author || {};
+  if (a.pen) return a.pen;
+  return [a.first, a.middle, a.last].filter(Boolean).join(' ');
 }
 
 // ── Responsive mode ────────────────────────────────────────────────
@@ -1210,6 +1257,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Events ──────────────────────────────────────────────────────
   loadTypography();
   syncTypePopover();
+  bindAuthorFields();
   applyTypewriterMode(App.data.typewriter);
 
   $('btn-contents').addEventListener('click', toggleRail);
