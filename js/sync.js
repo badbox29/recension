@@ -476,6 +476,12 @@ const Sync = (() => {
       if (tombs[key]) continue;
       const [type] = splitKey(key);
       if (!TYPES.includes(type)) continue;
+      // Absent locally → always fetch, whatever the metadata says.
+      // Relying on `serverAt > localAt` alone meant a record with missing
+      // or empty metadata compared 0 > 0, was judged up to date, and was
+      // never pulled — so a fresh device got the account record and none
+      // of the manuscript.
+      if (!(key in localIndex)) { toFetch.push(key); continue; }
       const serverAt = meta?.u || 0;
       const localAt  = localIndex[key] || 0;
       if (serverAt > localAt) toFetch.push(key);
@@ -555,7 +561,8 @@ const Sync = (() => {
     C.onProgress?.({ done: 0, total: Object.keys(stubs).length, phase: 'outline' });
     C.onOutlineReady?.(stubs);
 
-    // Phase 2 — bodies.
+    // Phase 2 — bodies. pull() fetches anything absent locally, which on a
+    // fresh device is everything.
     await pull();
     return { ok: true };
   }
@@ -655,6 +662,40 @@ const Sync = (() => {
 
     // Status
     lastSyncTime, pendingCount,
+
+    /**
+     * pushAll() — mark every local record dirty and flush.
+     *
+     * A repair tool. The dirty set is the only thing that decides what
+     * gets pushed, so if it is ever wrong — cleared early, lost, diverged
+     * after a failed write — the server silently stays behind and the UI
+     * has no way to tell. This re-states everything.
+     */
+    async pushAll() {
+      const index = await C.getLocalIndex();
+      const keys = Object.keys(index);
+      await txWrite('dirty', st => { for (const k of keys) st.put(Date.now(), k); });
+      await markAccountDirty();
+      return flush();
+    },
+
+    /**
+     * diagnose() — what the server actually has, from the console.
+     * Sync problems are otherwise silent: the UI can only say "incomplete".
+     */
+    async diagnose() {
+      const out = { worker: base(), guest: C.isGuest(), token: C.getToken()?.slice(0, 6) + '…' };
+      out.dirty = await getDirtyKeys();
+      const r = await withAuthRetry(() => request('GET', `/storage/${tokenPath()}`));
+      if (!r.ok) { out.listError = r.reason || r.status; console.table(out); return out; }
+      const keys = r.data?.keys || [];
+      out.remoteKeyCount = keys.length;
+      out.remoteSample = keys.slice(0, 10).map(k => `${k.key} u=${k.metadata?.u ?? 'NONE'}`);
+      out.withoutMetadata = keys.filter(k => !k.metadata?.u).map(k => k.key);
+      out.localIndexCount = Object.keys(await C.getLocalIndex()).length;
+      console.log(out);
+      return out;
+    },
 
     // Exposed for tests / debugging
     _pickNewer: pickNewer,
