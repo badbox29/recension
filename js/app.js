@@ -1169,6 +1169,188 @@ function authorByline() {
   return [a.first, a.middle, a.last].filter(Boolean).join(' ');
 }
 
+// ══ Export ═════════════════════════════════════════════════════════
+//
+// Two different jobs, deliberately two different files.
+//
+//   BACKUP   Everything, restorable. One .md per scene in a folder tree
+//            you can read without this app, plus a JSON of every record
+//            with ids and ordering intact. The JSON is what a restore
+//            reads; the .md files are what a human reads.
+//
+//   COMPILE  The manuscript as one continuous document, title page and
+//            all. What you hand to a reader.
+//
+// A backup only a human can read isn't a backup, and a manuscript with
+// folder structure in it isn't a manuscript. Hence both.
+
+function slug(s, fallback = 'untitled') {
+  const out = (s || '').trim().toLowerCase()
+    .replace(/[\u2018\u2019\u201C\u201D'"]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return out || fallback;
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function stamp() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function downloadBlob(data, filename, type) {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  // Revoke on a delay: revoking synchronously can cancel the download in
+  // some browsers before they have finished reading the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function manuscriptTitle() {
+  const books = App.tree?.books || [];
+  return books.length === 1 ? books[0].title : 'Manuscript';
+}
+
+/**
+ * titlePage() — a standard manuscript front page.
+ *
+ * Contact block first, then title and byline with an approximate word
+ * count. Roughly Shunn format, which is what agents and editors expect
+ * and nobody is ever annoyed to receive.
+ */
+function titlePage(title, words) {
+  const a = App.data.author || {};
+  const legal  = [a.first, a.middle, a.last].filter(Boolean).join(' ');
+  const byline = authorByline();
+
+  const contact = [
+    legal,
+    ...(a.address || '').split('\n').map(l => l.trim()).filter(Boolean),
+    a.phone,
+    a.email,
+  ].filter(Boolean);
+
+  if (a.agent) {
+    contact.push('', `Represented by ${a.agent}`);
+    if (a.agentContact) contact.push(a.agentContact);
+  }
+
+  const out = [];
+  if (contact.length) out.push(contact.join('  \n'), '');
+  out.push('', '', `# ${title}`);
+  if (byline) out.push('', `by ${byline}`);
+  // Manuscript word counts are conventionally rounded, not exact.
+  out.push('', `*about ${(Math.round(words / 100) * 100).toLocaleString()} words*`);
+  if (a.copyright) out.push('', a.copyright);
+  out.push('', '---', '');
+  return out.join('\n');
+}
+
+// compileText() — the whole manuscript as one markdown document.
+async function compileText() {
+  const scenes = scenesInScope({ kind: 'all', id: null });
+  const words  = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+  const parts  = [titlePage(manuscriptTitle(), words)];
+
+  let lastChapter;
+  let first = true;
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+
+    if (meta.chapterId !== lastChapter) {
+      lastChapter = meta.chapterId;
+      if (meta.chapterTitle) parts.push(`\n## ${meta.chapterTitle}\n`);
+    } else if (!first) {
+      // Scene break inside a chapter. A centred hash is the conventional
+      // typescript mark for a break and survives any converter.
+      parts.push('\n#\n');
+    }
+    first = false;
+    parts.push((rec.body || '').trim());
+  }
+  return parts.join('\n') + '\n';
+}
+
+async function exportManuscript() {
+  await flushActiveScene();
+  const text = await compileText();
+  downloadBlob(text, `${slug(manuscriptTitle(), 'manuscript')}-${stamp()}.md`,
+               'text/markdown;charset=utf-8');
+  showToast('Manuscript compiled.');
+}
+
+/**
+ * exportBackup() — everything, as a zip.
+ *
+ *   manuscript/01-part-one/02-chapter-two/03-the-ascent.md
+ *   manuscript/unplaced/01-a-fragment.md
+ *   compiled.md
+ *   recension-backup.json      ← the restorable copy
+ *
+ * Numeric prefixes preserve reading order in a file listing, which
+ * alphabetical names would scramble.
+ */
+async function exportBackup() {
+  await flushActiveScene();
+
+  const files = {};
+  const enc = fflate.strToU8;
+
+  const [books, chapters, scenes, cards, events] = await Promise.all([
+    RecordStore.getAll('book'), RecordStore.getAll('chapter'),
+    RecordStore.getAll('scene'), RecordStore.getAll('card'),
+    RecordStore.getAll('event'),
+  ]);
+
+  const addScene = (path, i, rec) => {
+    const head = [`# ${rec.title || 'Untitled scene'}`];
+    if (rec.synopsis) head.push('', `> ${rec.synopsis}`);
+    if (rec.pov)      head.push('', `POV: ${rec.pov}`);
+    head.push('', (rec.body || '').trim(), '');
+    files[`${path}/${pad(i + 1)}-${slug(rec.title, 'scene')}.md`] = enc(head.join('\n'));
+  };
+
+  const tree = App.tree;
+  tree.books.forEach((b, bi) => {
+    const bp = `manuscript/${pad(bi + 1)}-${slug(b.title, 'part')}`;
+    b.chapters.forEach((c, ci) => {
+      const cp = `${bp}/${pad(ci + 1)}-${slug(c.title, 'chapter')}`;
+      c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
+    });
+  });
+  tree.looseChapters.forEach((c, ci) => {
+    const cp = `manuscript/${pad(ci + 1)}-${slug(c.title, 'chapter')}`;
+    c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
+  });
+  tree.unfiled.forEach((s, si) => {
+    if (scenes[s.id]) addScene('manuscript/unplaced', si, scenes[s.id]);
+  });
+
+  files['compiled.md'] = enc(await compileText());
+
+  // The restorable copy: full records with ids, timestamps and ordering —
+  // everything the .md files drop on the way out.
+  files['recension-backup.json'] = enc(JSON.stringify({
+    format: 'recension-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    author: App.data.author,
+    records: { books, chapters, scenes, cards, events },
+  }, null, 2));
+
+  const zipped = fflate.zipSync(files, { level: 6 });
+  downloadBlob(zipped, `recension-backup-${stamp()}.zip`, 'application/zip');
+  showToast('Backup downloaded.');
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -1374,6 +1556,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     closeModal('modal-settings');
     Auth.showGuestSwitchConfirm();
   });
+
+  $('btn-export-manuscript').addEventListener('click', () => exportManuscript()
+    .catch(e => { console.error(e); showToast('Compile failed - see the console.'); }));
+  $('btn-export-backup').addEventListener('click', () => exportBackup()
+    .catch(e => { console.error(e); showToast('Backup failed - see the console.'); }));
 
   $('confirm-cancel-btn').addEventListener('click', () => closeModal('modal-confirm'));
   $('confirm-ok-btn').addEventListener('click', () => {
