@@ -934,3 +934,40 @@ html[data-size="lg"] { --prose-size: 1.1875rem; --prose-leading: 1.78; }
 
 html.typewriter .prose { padding-bottom: 62vh; }
 html.typewriter .scene { padding-bottom: 0; }
+
+/* ── Account section ───────────────────────────────────────────── */
+
+.auth-badge {
+  font-family: var(--chrome);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.0625rem 0.375rem;
+  margin-left: 0.375rem;
+  vertical-align: middle;
+}
+.auth-badge-token  { border-color: var(--rubric-dim); color: var(--rubric); }
+.auth-badge-google { border-color: var(--ink-faint); color: var(--ink); }
+
+.btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+/* The token is a credential you have to read back accurately — monospace
+   and selectable, not styled prose. */
+.token-display {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--t-sm);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.375rem 0.5rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.auth-google-info { display: flex; align-items: center; gap: 0.625rem; }
+.auth-google-avatar { width: 2rem; height: 2rem; border-radius: 50%; }
