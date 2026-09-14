@@ -22,7 +22,7 @@
      app.js. The ?v= on each asset is what forces a fresh fetch, so if you
      change a file and don't change this number, the change may not reach
      your phone at all. Keep the number the same across all five. -->
-<link rel="stylesheet" href="css/styles.css?v=2" />
+<link rel="stylesheet" href="css/styles.css?v=3" />
 
 <!-- Applied before first paint so the page never flashes light then dark. -->
 <script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -62,10 +62,17 @@
        left, figures on the right. Status is a rubric tick, not a pill. -->
   <aside class="rail" id="rail" aria-label="Contents">
     <div class="rail-head">
-      <h2>Contents</h2>
+      <div class="rail-switch" role="tablist" aria-label="Rail contents">
+        <button role="tab" id="rail-tab-manuscript" data-section="manuscript"
+                aria-selected="true">Contents</button>
+        <button role="tab" id="rail-tab-cards" data-section="cards"
+                aria-selected="false">Cards</button>
+      </div>
       <button class="ghost-btn" id="btn-new-part">New part</button>
+      <button class="ghost-btn" id="btn-new-card" hidden>New card</button>
     </div>
     <div class="toc" id="toc"></div>
+    <div class="toc" id="card-list" hidden></div>
     <div class="rail-foot">
       <span id="rail-total"></span>
     </div>
@@ -114,6 +121,46 @@
 
       <!-- Mobile and any read-only context render here instead of the editor. -->
       <div class="reading" id="reading" hidden></div>
+    </article>
+
+    <!-- Card editor. Cards are the reference layer: people, places,
+         factions, objects, research. Deliberately free-form fields rather
+         than a fixed schema — a character sheet for a spy thriller and one
+         for a family saga have almost nothing in common, and guessing
+         wrong means fighting the form forever. -->
+    <article class="card-edit" id="card-edit" hidden>
+      <input class="scene-title" id="card-name" placeholder="Untitled"
+             aria-label="Card name" spellcheck="false" />
+
+      <div class="scene-meta">
+        <label class="meta-field">
+          <span>Type</span>
+          <select id="card-type">
+            <option value="character">Character</option>
+            <option value="location">Location</option>
+            <option value="faction">Faction</option>
+            <option value="item">Item</option>
+            <option value="research">Research</option>
+          </select>
+        </label>
+        <label class="meta-field">
+          <span>Tags</span>
+          <input id="card-tags" placeholder="comma, separated" />
+        </label>
+        <label class="meta-field meta-wide">
+          <span>Also known as</span>
+          <input id="card-aka" placeholder="Nicknames, callsigns, aliases" />
+        </label>
+      </div>
+
+      <div class="card-fields" id="card-fields"></div>
+      <button class="toc-add card-add-field" id="btn-add-field">+ field</button>
+
+      <div class="card-notes">
+        <label for="card-body">Notes</label>
+        <textarea id="card-body" rows="14"
+                  placeholder="Anything worth keeping straight."></textarea>
+      </div>
     </article>
 
     <!-- Continuous read-through. Scenes concatenated in tree order, each
@@ -330,9 +377,9 @@
 
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
-<script src="js/auth.js?v=2"></script>
-<script src="js/recordStore.js?v=2"></script>
-<script src="js/sync.js?v=2"></script>
-<script src="js/app.js?v=2"></script>
+<script src="js/auth.js?v=3"></script>
+<script src="js/recordStore.js?v=3"></script>
+<script src="js/sync.js?v=3"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>
