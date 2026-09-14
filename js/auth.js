@@ -1184,6 +1184,14 @@ const Auth = (() => {
       }
 
       const merged = C.mergeData(remote);
+      // ALWAYS set the token. The stored account record has no userToken
+      // field — it's a credential and deliberately never synced — so
+      // mergeData() falls back to defaults and MINTS A NEW RANDOM TOKEN.
+      // Leaving it unset meant a successful load authenticated as a
+      // different, empty account: the author details from the fetched
+      // record appeared, and nothing else ever pulled. The Google path
+      // above sets its own equivalent for exactly this reason.
+      merged.userToken = token;
       merged.workerUrl = workerUrl;
       C.onSignedIn(merged, false, { eraseLocal });
       C.closeModal('modal-account-setup');

@@ -81,6 +81,12 @@ function mergeData(raw) {
   if (!raw || typeof raw !== 'object') return d;
   return {
     ...d, ...raw,
+    // defaultData() mints a fresh token every call, so any merge whose
+    // input lacks one would silently replace the credential — and the app
+    // would then be a different, empty account. The account record never
+    // carries userToken (it's a credential, deliberately not synced), so
+    // this path is hit on every pull. Keep what we already have.
+    userToken: raw?.userToken || App.data?.userToken || d.userToken,
     author: { ...d.author, ...(raw.author && typeof raw.author === 'object' ? raw.author : {}) },
     tabState: (raw.tabState && typeof raw.tabState === 'object')
       ? { openIds: Array.isArray(raw.tabState.openIds) ? raw.tabState.openIds : [],
