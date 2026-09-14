@@ -168,11 +168,17 @@
 
       <section class="set-block">
         <h3>Sync</h3>
-        <label class="row stack">
+        <!-- Not a <label> any more: it wraps a button, and a click on the
+             button would otherwise be forwarded to the input. -->
+        <div class="row stack">
           <span>Worker address</span>
-          <input id="set-worker" placeholder="https://recension-worker.you.workers.dev"
-                 spellcheck="false" autocapitalize="off" />
-        </label>
+          <div class="field-row">
+            <input id="set-worker" placeholder="https://recension-worker.you.workers.dev"
+                   spellcheck="false" autocapitalize="off" autocorrect="off"
+                   aria-label="Worker address" />
+            <button class="ghost-btn" id="btn-save-worker">Save</button>
+          </div>
+        </div>
         <p class="note" id="sync-note"></p>
         <button class="ghost-btn" id="btn-sync-now">Sync now</button>
       </section>
