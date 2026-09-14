@@ -661,3 +661,72 @@ svg { width: 1.125rem; height: 1.125rem; fill: none;
   }
   .scene-title { pointer-events: none; }
 }
+
+/* ── Row actions ───────────────────────────────────────────────── */
+/* Every contents row can be renamed and deleted. The affordance stays
+   hidden until hover or focus so the rail still reads as a table of
+   contents rather than a toolbar. */
+
+.toc-more {
+  flex: none;
+  opacity: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: var(--t-sm);
+  line-height: 1;
+  padding: 0 0.125rem;
+  cursor: pointer;
+}
+.toc-part:hover .toc-more,
+.toc-chapter:hover .toc-more,
+.toc-scene:hover .toc-more,
+.toc-more:focus-visible { opacity: .7; }
+.toc-more:hover { opacity: 1; color: var(--ink); }
+
+.row-menu {
+  position: fixed;
+  z-index: 70;
+  background: var(--vellum);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.1875rem;
+  min-width: 8rem;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 20%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+.row-menu button {
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  padding: 0.3125rem 0.5rem;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.row-menu button:hover { background: var(--rule-soft); }
+.row-menu button.danger { color: var(--rubric); }
+
+/* Rename in place: the input sits exactly where the title was. */
+.toc-rename {
+  font: inherit;
+  font-family: var(--prose);
+  font-size: inherit;
+  font-weight: inherit;
+  color: var(--ink);
+  background: var(--vellum);
+  border: 1px solid var(--ink-faint);
+  border-radius: 2px;
+  padding: 0 0.1875rem;
+  min-width: 0;
+  flex: 1;
+}
+
+/* A loose chapter sits at the top level, so it carries a part's weight. */
+.toc-chapter.loose { padding-left: 0.375rem; font-size: var(--t-md); font-weight: 600; }
+
+.toc-add-chapter { padding-left: 1.125rem; }
