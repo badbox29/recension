@@ -381,7 +381,11 @@ const Auth = (() => {
     let remote = null;
     let remoteReadFailed = false;
     try {
-      const res = await fetch(`${base}/storage/${encodeURIComponent(kvKey)}/profile`, {
+      // RECENSION NOTE: this module's stock key is `profile`. Recension
+      // stores one KV key per record and names the account record
+      // `_account` (the leading underscore keeps it out of the content
+      // namespace). All four lookups in this file use that name.
+      const res = await fetch(`${base}/storage/${encodeURIComponent(kvKey)}/_account`, {
         headers: { 'Authorization': `Bearer ${idToken}` },
       });
       if(res.ok)                   { const j = await res.json(); remote = j.value ?? j; }
@@ -816,7 +820,7 @@ const Auth = (() => {
     if(base) {
       const bodyStr = JSON.stringify(data);
       _signRequest('PUT', newToken, bodyStr).catch(() => ({})).then(hmacHdrs => {
-        fetch(`${base}/storage/${encodeURIComponent(newToken)}/profile`, {
+        fetch(`${base}/storage/${encodeURIComponent(newToken)}/_account`, {
           method:  'PUT',
           headers: { 'Content-Type': 'application/json', ...hmacHdrs },
           body:    bodyStr,
@@ -1164,7 +1168,7 @@ const Auth = (() => {
       try {
         const base    = workerUrl.replace(/\/+$/,'');
         const hmacHdrs = await _signRequest('GET', token, '').catch(() => ({}));
-        const res = await fetch(`${base}/storage/${encodeURIComponent(token)}/profile`, {
+        const res = await fetch(`${base}/storage/${encodeURIComponent(token)}/_account`, {
           headers: hmacHdrs,
         });
         if(res.ok) { const j = await res.json(); remote = j.value ?? j; }
@@ -1579,7 +1583,7 @@ const Auth = (() => {
 
         let ok = false;
         try {
-          const res = await fetch(`${base}/storage/${encodeURIComponent(newToken)}/profile`, {
+          const res = await fetch(`${base}/storage/${encodeURIComponent(newToken)}/_account`, {
             method:  'PUT',
             headers: { 'Content-Type': 'application/json', ...hmacHdrs },
             body:    bodyStr,

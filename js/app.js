@@ -1083,8 +1083,13 @@ function showSettingsTab(name) {
   _settingsTab = name;
   for (const b of document.querySelectorAll('.set-tabs [role="tab"]'))
     b.setAttribute('aria-selected', String(b.dataset.panel === name));
+  // Class, not the hidden attribute: the panels are stacked in one grid
+  // cell and the inactive ones stay in flow (visibility:hidden) so the
+  // modal keeps the height of the tallest. visibility:hidden also takes
+  // them out of the tab order and hides them from screen readers, which
+  // display:none would do but opacity:0 would not.
   for (const p of document.querySelectorAll('.set-panel'))
-    p.hidden = p.id !== `panel-${name}`;
+    p.classList.toggle('is-active', p.id === `panel-${name}`);
   document.querySelector('#modal-settings .modal-body').scrollTop = 0;
 }
 
@@ -1436,7 +1441,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     },
     onGuestReady: async () => { await renderTree(); renderTabs(); },
     onSessionExpired: () => setSyncState('error', 'Sign-in expired'),
-    pushToWorker:  () => Sync.flush(),
+    // Called by auth.js at account creation to prove the worker is
+    // reachable AND to lay down the account record. flush() alone was not
+    // enough: it only pushes what's in the dirty set, and creating an
+    // account doesn't mark anything dirty — so it reported success having
+    // written nothing, and the account was then unfindable from any other
+    // device. Write the account record explicitly, then flush the content.
+    pushToWorker: async () => {
+      const wrote = await Sync.pushAccount();
+      if (!wrote) return false;
+      const r = await Sync.flush();
+      return r.ok !== false;
+    },
     startSyncPing: () => Sync.start(),
     openModal, closeModal,
     toast: showToast,

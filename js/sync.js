@@ -642,6 +642,7 @@ const Sync = (() => {
 
     // Sync operations
     flush,
+    pushAccount: pushAccountRecord,
     pull,
     freshDeviceSync,
     scheduleFlush,
