@@ -167,9 +167,9 @@
       </section>
 
       <section class="set-block">
-        <h3>Sync</h3>
-        <!-- Not a <label> any more: it wraps a button, and a click on the
-             button would otherwise be forwarded to the input. -->
+        <h3>Worker</h3>
+        <!-- Not a <label>: it wraps a button, and a click on the button
+             would otherwise be forwarded to the input. -->
         <div class="row stack">
           <span>Worker address</span>
           <div class="field-row">
@@ -180,7 +180,6 @@
           </div>
         </div>
         <p class="note" id="sync-note"></p>
-        <button class="ghost-btn" id="btn-sync-now">Sync now</button>
       </section>
 
       <!-- Account. auth.js shows/hides and fills these by id — the ids are
@@ -211,10 +210,60 @@
 
         <div id="settings-google-info"></div>
 
-        <div class="btn-row" style="margin-top:.75rem;">
+        <div class="btn-row" id="account-actions">
+          <button class="ghost-btn" id="btn-sync-now">Sync now</button>
           <button class="ghost-btn" id="settings-upgrade-google">Switch to Google</button>
           <button class="ghost-btn" id="btn-switch-account">Sign out</button>
         </div>
+      </section>
+
+      <!-- Author details. These belong to you rather than to any one
+           manuscript, and they're what a title page and a submission
+           header are built from. Deliberately NOT part of account
+           creation: none of it is needed to make an account, and asking
+           for a mailing address before someone has written a word is the
+           wrong moment. -->
+      <section class="set-block">
+        <h3>Author</h3>
+        <p class="note">Used on title pages and manuscript headers. All optional.</p>
+
+        <div class="name-grid">
+          <label class="row stack"><span>First name</span><input id="au-first" /></label>
+          <label class="row stack"><span>Middle name</span><input id="au-middle" /></label>
+          <label class="row stack"><span>Last name</span><input id="au-last" /></label>
+        </div>
+
+        <label class="row stack">
+          <span>Byline</span>
+          <input id="au-pen" placeholder="The name that appears on the cover" />
+        </label>
+
+        <label class="row stack">
+          <span>Mailing address</span>
+          <textarea id="au-address" rows="3"
+                    placeholder="Street&#10;City, State ZIP&#10;Country"></textarea>
+        </label>
+
+        <div class="pair-grid">
+          <label class="row stack"><span>Email</span>
+            <input id="au-email" type="email" spellcheck="false" /></label>
+          <label class="row stack"><span>Phone</span>
+            <input id="au-phone" type="tel" /></label>
+        </div>
+
+        <label class="row stack">
+          <span>Agent</span>
+          <input id="au-agent" placeholder="Name and agency" />
+        </label>
+        <label class="row stack">
+          <span>Agent contact</span>
+          <input id="au-agent-contact" placeholder="Email or phone" spellcheck="false" />
+        </label>
+
+        <label class="row stack">
+          <span>Copyright line</span>
+          <input id="au-copyright" placeholder="© 2026 Your Name" />
+        </label>
       </section>
 
     </div>
