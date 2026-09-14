@@ -150,7 +150,11 @@
                 aria-controls="panel-author" aria-selected="false">Author info</button>
       </div>
 
-      <div class="set-panel" id="panel-interface" role="tabpanel" aria-labelledby="tab-interface">
+      <!-- All three panels occupy the same grid cell, so the modal is
+           always as tall as the tallest one and never jumps height when
+           you switch tabs. -->
+      <div class="set-panels">
+      <div class="set-panel is-active" id="panel-interface" role="tabpanel" aria-labelledby="tab-interface">
 <section class="set-block">
         <h3>Reading</h3>
         <label class="row">
@@ -164,7 +168,7 @@
       </section>
       </div>
 
-      <div class="set-panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden>
+      <div class="set-panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account">
 <section class="set-block">
         <h3>Worker</h3>
         <!-- Not a <label>: it wraps a button, and a click on the button
@@ -227,7 +231,7 @@
       </section>
       </div>
 
-      <div class="set-panel" id="panel-author" role="tabpanel" aria-labelledby="tab-author" hidden>
+      <div class="set-panel" id="panel-author" role="tabpanel" aria-labelledby="tab-author">
       <!-- Author details. These belong to you rather than to any one
            manuscript, and they're what a title page and a submission
            header are built from. Deliberately NOT part of account
@@ -276,6 +280,7 @@
           <input id="au-copyright" placeholder="© 2026 Your Name" />
         </label>
       </section>
+      </div>
       </div>
     </div>
   </div>
