@@ -1162,7 +1162,9 @@ html.typewriter .scene { padding-bottom: 0; }
   display: grid;
   grid-template-columns: 9rem 1fr auto;
   gap: 0.5rem;
-  align-items: center;
+  /* Baseline-ish rather than centred: a three-line value should keep its
+     label beside the FIRST line, not floating in the middle of the row. */
+  align-items: start;
   padding: 0.1875rem 0;
 }
 
@@ -1183,15 +1185,23 @@ html.typewriter .scene { padding-bottom: 0; }
 .cf-key:hover  { border-bottom-color: var(--rule-soft); }
 .cf-key:focus  { outline: none; border-bottom-color: var(--ink-faint); color: var(--ink-soft); }
 
+/* A textarea rather than an input, sized to its content by autoGrow().
+   A single-line input truncated "Mexico's counter-cyber terrorism serv…"
+   with no way to see the rest, which makes the field worse than useless.
+   overflow:hidden because the element is always exactly as tall as its
+   text — it should never scroll inside itself. */
 .cf-value {
   font-family: var(--prose);
   font-size: var(--t-sm);
+  line-height: 1.5;
   color: var(--ink);
   background: none;
   border: 0;
   border-bottom: 1px solid var(--rule-soft);
   padding: 0.1875rem 0;
   min-width: 0;
+  resize: none;
+  overflow: hidden;
 }
 .cf-value:focus { outline: none; border-bottom-color: var(--ink-faint); }
 
@@ -1230,6 +1240,7 @@ html.typewriter .scene { padding-bottom: 0; }
   resize: vertical;
 }
 .card-notes textarea:focus { outline: none; }
+.card-notes textarea { resize: none; overflow: hidden; }
 
 @media (max-width: 44rem) {
   .card-edit { padding: 1.75rem 1.125rem 6rem; }
