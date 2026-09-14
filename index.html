@@ -77,21 +77,6 @@
       <button class="solid-btn" id="btn-empty-new">Start a scene</button>
     </div>
 
-    <!-- Continuous reading view: a part, a chapter, or the whole
-         manuscript rendered as one page. Clicking a paragraph opens that
-         scene for editing at that spot. -->
-    <section class="readview" id="readview" hidden>
-      <header class="read-head">
-        <h1 id="read-title"></h1>
-        <p class="read-sub" id="read-sub"></p>
-        <label class="read-toggle">
-          <input type="checkbox" id="read-show-titles" />
-          <span>Scene titles</span>
-        </label>
-      </header>
-      <div class="read-body" id="read-body"></div>
-    </section>
-
     <article class="scene" id="scene" hidden>
       <!-- Title is edited in place. A separate field for it would put a form
            between the writer and the page. -->
@@ -153,8 +138,20 @@
       </button>
     </div>
     <div class="modal-body">
+      <!-- Tabs. The settings modal outgrew a single scroll; grouping by
+           what the setting is ABOUT (the app, the account, the person)
+           beats grouping by when you happen to need it. -->
+      <div class="set-tabs" role="tablist" aria-label="Settings sections">
+        <button role="tab" id="tab-interface" data-panel="interface"
+                aria-controls="panel-interface" aria-selected="true">Interface</button>
+        <button role="tab" id="tab-account" data-panel="account"
+                aria-controls="panel-account" aria-selected="false">Account</button>
+        <button role="tab" id="tab-author" data-panel="author"
+                aria-controls="panel-author" aria-selected="false">Author info</button>
+      </div>
 
-      <section class="set-block">
+      <div class="set-panel" id="panel-interface" role="tabpanel" aria-labelledby="tab-interface">
+<section class="set-block">
         <h3>Reading</h3>
         <label class="row">
           <span>Dark theme</span>
@@ -165,8 +162,10 @@
           <input type="checkbox" id="set-typewriter" />
         </label>
       </section>
+      </div>
 
-      <section class="set-block">
+      <div class="set-panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden>
+<section class="set-block">
         <h3>Worker</h3>
         <!-- Not a <label>: it wraps a button, and a click on the button
              would otherwise be forwarded to the input. -->
@@ -217,7 +216,7 @@
         </div>
       </section>
 
-      <section class="set-block">
+<section class="set-block">
         <h3>Export</h3>
         <p class="note">The manuscript is one document to read or send.
           The backup is everything, and it can be restored.</p>
@@ -226,7 +225,9 @@
           <button class="ghost-btn" id="btn-export-backup">Download backup</button>
         </div>
       </section>
+      </div>
 
+      <div class="set-panel" id="panel-author" role="tabpanel" aria-labelledby="tab-author" hidden>
       <!-- Author details. These belong to you rather than to any one
            manuscript, and they're what a title page and a submission
            header are built from. Deliberately NOT part of account
@@ -275,7 +276,7 @@
           <input id="au-copyright" placeholder="© 2026 Your Name" />
         </label>
       </section>
-
+      </div>
     </div>
   </div>
 </div>
