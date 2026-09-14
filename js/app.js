@@ -893,6 +893,15 @@ function ensureEditor() {
 //    under you mid-word. It should only move when the caret changes LINE,
 //    which is the only time its height on screen actually changed.
 
+// The scroller needs slack at BOTH ends or the target height is
+// unreachable: at the top of a scene the caret sits above it with
+// scrollTop already 0, and at the end there's nothing below to pull up.
+// The padding is applied via a class so it only exists when the mode is on.
+function applyTypewriterMode(on) {
+  document.documentElement.classList.toggle('typewriter', !!on);
+  App.editor?.codemirror?.refresh();
+}
+
 let _lastCaretLine = -1;
 
 function typewriterScroll(force = false) {
@@ -1009,6 +1018,7 @@ async function openScene(id) {
     cm.refresh();
     cm.clearHistory();   // undo must not cross scene boundaries
     _lastCaretLine = -1; // a new scene starts a fresh caret-line memo
+    if (App.data.typewriter) requestAnimationFrame(() => typewriterScroll(true));
   }
 
   updateTally();
@@ -1190,6 +1200,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Events ──────────────────────────────────────────────────────
   loadTypography();
   syncTypePopover();
+  applyTypewriterMode(App.data.typewriter);
 
   $('btn-contents').addEventListener('click', toggleRail);
   $('btn-read').addEventListener('click', toggleRead);
@@ -1248,7 +1259,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('set-typewriter').addEventListener('change', e => {
     App.data.typewriter = e.target.checked;
     saveAccount();
-    if (e.target.checked) typewriterScroll(true);
+    applyTypewriterMode(e.target.checked);
+    // Let the new padding land before measuring against it.
+    if (e.target.checked) requestAnimationFrame(() => typewriterScroll(true));
   });
   $('btn-save-worker').addEventListener('click', saveWorkerUrl);
   // Enter in the field still works, for anyone who expects it to.
