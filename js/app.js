@@ -104,7 +104,9 @@ function accountForSync() {
   return {
     authMethod: d.authMethod,
     linkedGoogle: d.linkedGoogle,
-    firstName: d.firstName, lastName: d.lastName, username: d.username,
+    // firstName/lastName/username were auth.js's own fields. They were
+    // removed from the sign-up wizard (the author block below is the real
+    // identity), so there is nothing left to replicate.
     author: d.author,
     tabState: d.tabState,
     tocState: d.tocState,

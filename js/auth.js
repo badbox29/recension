@@ -660,7 +660,7 @@ const Auth = (() => {
   // HOST APP INTERFACE: calls getData(), startSyncPing(), closeModal()
   function showGoogleReauth() {
     const d       = getData();
-    const name    = d.linkedGoogle?.name    || [d.firstName, d.lastName].filter(Boolean).join(' ') || '';
+    const name    = d.linkedGoogle?.name || '';
     const email   = d.linkedGoogle?.email   || '';
     const picture = d.linkedGoogle?.picture || '';
 
@@ -902,8 +902,8 @@ const Auth = (() => {
   // Screen flow:
   //   S1  Welcome
   //        ├─ "Yes, load existing" → S2A (choose token or Google)
-  //        ├─ "No, start fresh"    → S2B (firstName/lastName/username + worker + auth)
-  //        └─ "Try as guest"       → SG  (optional firstName/lastName/username)
+  //        ├─ "No, start fresh"    → S2B (worker + auth)
+  //        └─ "Try as guest"       → SG  (no fields — straight in)
   //
   //   S2A  Load existing
   //        ├─ "Token"  → S3B (worker URL + token entry)
@@ -955,48 +955,33 @@ const Auth = (() => {
   }
 
   // ── SG: Guest intro ─────────────────────────────────────────────
-  // Optional firstName, lastName, username before entering as guest.
-  // All fields are optional — "skip and jump straight in" is valid.
+  // RECENSION NOTE: this screen normally collects firstName/lastName/
+  // username. Removed for the same reason as showSetupFresh — the host
+  // keeps its own author identity, and a guest is someone who wants to
+  // start writing, not fill in a form.
   // HOST APP INTERFACE: calls getData(), setData(), onGuestReady()
   function showSetupGuest() {
-    setupScreen('Just Exploring?', `
+    setupScreen('Just start writing', `
       <p class="f13 lh muted" style="margin-bottom:1rem;">
-        Tell us a little about yourself — or skip and jump straight in.
-        You can always fill this in later from Settings.
+        Everything stays on this device. Nothing syncs and nothing leaves
+        the browser. You can create an account later from Settings and
+        bring your work with you.
       </p>
-      <div class="form-group">
-        <label class="form-label">First Name <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-guest-firstname" placeholder="First name…"/>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Last Name <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-guest-lastname" placeholder="Last name…"/>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Username <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-guest-username" placeholder="Choose a username…"/>
-      </div>
       <div class="form-actions" style="flex-direction:column;gap:.65rem;margin-top:.5rem;">
         <button class="btn btn-primary w100" id="auth-btn-guest-continue" style="justify-content:center;">
-          Continue as Guest
+          Start writing
         </button>
         <button class="btn btn-ghost btn-sm" id="auth-btn-back" style="justify-content:center;">← Back</button>
       </div>
     `);
     document.getElementById('auth-btn-back').addEventListener('click', showAccountSetup);
     document.getElementById('auth-btn-guest-continue').addEventListener('click', () => {
-      const firstName = document.getElementById('auth-guest-firstname').value.trim();
-      const lastName  = document.getElementById('auth-guest-lastname').value.trim();
-      const username  = document.getElementById('auth-guest-username').value.trim();
       const d = getData();
       d.authMethod = 'guest';
-      if(firstName) d.firstName = firstName;
-      if(lastName)  d.lastName  = lastName;
-      if(username)  d.username  = username;
       C.setData(d);
       C.closeModal('modal-account-setup');
       C.onGuestReady(d);
-      C.toast(`Exploring as guest — create an account anytime from Settings ${appEmoji()}`);
+      C.toast('Working on this device only — create an account anytime from Settings');
     });
   }
 
@@ -1208,15 +1193,26 @@ const Auth = (() => {
   // Auth method chosen via buttons at bottom.
   // HOST APP INTERFACE: calls getData(), setData(), onSignedIn(),
   //                     pushToWorker(), startSyncPing()
+  // showSetupFresh() — create a new account.
+  //
+  // RECENSION NOTE: the First/Last/Username fields this module normally
+  // collects were removed. The host app keeps a fuller author identity of
+  // its own (byline, legal name, address, agent) which is what title pages
+  // and manuscript headers are built from; duplicating a weaker copy here
+  // meant asking for a name nothing would ever read. Username was
+  // vestigial — this app has no multi-user context.
+  //
+  // The Worker URL is prefilled from what the host already has, so this is
+  // a confirmation rather than a second round of typing. It stays editable
+  // as a last-chance correction, and stays present so someone arriving here
+  // without one set is not stuck.
   function showSetupFresh() {
-    const d             = getData();
-    const existingFirst = d?.firstName || '';
-    const existingLast  = d?.lastName  || '';
-    const existingUser  = d?.username  || '';
+    const d              = getData();
+    const existingWorker = d?.workerUrl || '';
     const title = isGuest() ? 'Create Your Account' : 'Start Fresh';
     const intro = isGuest()
-      ? `Set up your account to save your data across devices. Everything you've done as a guest comes with you.`
-      : 'Tell us a little about yourself to get started.';
+      ? `Everything you have written so far comes with you.`
+      : 'Set up a new account.';
 
     const googleOption = isGoogleAuthAvailable()
       ? `<button class="btn btn-ghost w100" id="auth-btn-fresh-google" style="justify-content:center;">
@@ -1227,35 +1223,19 @@ const Auth = (() => {
     setupScreen(title, `
       <p class="f13 lh muted" style="margin-bottom:1rem;">${intro}</p>
       <div class="form-group">
-        <label class="form-label">First Name <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-fresh-firstname"
-               placeholder="First name…"
-               value="${_esc(existingFirst)}"/>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Last Name <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-fresh-lastname"
-               placeholder="Last name…"
-               value="${_esc(existingLast)}"/>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Username <span class="muted" style="font-size:.78rem;">(optional)</span></label>
-        <input class="input" id="auth-fresh-username"
-               placeholder="Choose a username…"
-               value="${_esc(existingUser)}"/>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Worker URL</label>
+        <label class="form-label">Worker address</label>
         <input class="input" id="auth-fresh-worker"
-               placeholder="https://your-worker.workers.dev"/>
-        <div class="form-hint">Required for cross-device sync.</div>
+               spellcheck="false" autocapitalize="off" autocorrect="off"
+               placeholder="https://your-worker.workers.dev"
+               value="${_esc(existingWorker)}"/>
+        <div class="form-hint">Where your writing syncs. Change it in Settings later.</div>
       </div>
       <div id="auth-fresh-status"
-           style="min-height:1.3rem;font-size:.82rem;color:var(--red,#c07070);margin-bottom:.5rem;">
+           style="min-height:1.3rem;font-size:.82rem;color:var(--rubric,#c07070);margin-bottom:.5rem;">
       </div>
       <div class="form-actions" style="flex-direction:column;gap:.65rem;">
         <button class="btn btn-primary w100" id="auth-btn-fresh-token" style="justify-content:center;">
-          Use Token
+          Create with a token
         </button>
         ${googleOption}
         <div class="auth-divider" style="margin:.1rem 0;"></div>
@@ -1263,19 +1243,16 @@ const Auth = (() => {
       </div>
     `);
 
-    // Back: guests close modal, new users go to S1
+    // Back: guests close the modal, new users go to S1
     document.getElementById('auth-btn-back').addEventListener('click', () => {
       if(isGuest()) { C.closeModal('modal-account-setup'); } else { showAccountSetup(); }
     });
 
-    const firstInput  = document.getElementById('auth-fresh-firstname');
-    const lastInput   = document.getElementById('auth-fresh-lastname');
-    const userInput   = document.getElementById('auth-fresh-username');
     const workerInput = document.getElementById('auth-fresh-worker');
     const statusEl    = document.getElementById('auth-fresh-status');
 
     function validate() {
-      if(!workerInput.value.trim()) { statusEl.textContent = 'Please enter your Worker URL.'; return false; }
+      if(!workerInput.value.trim()) { statusEl.textContent = 'Enter your worker address.'; return false; }
       statusEl.textContent = '';
       return true;
     }
@@ -1283,25 +1260,19 @@ const Auth = (() => {
     // ── Token path ─────────────────────────────────────────────
     document.getElementById('auth-btn-fresh-token').addEventListener('click', async () => {
       if(!validate()) return;
-      const firstName = firstInput.value.trim();
-      const lastName  = lastInput.value.trim();
-      const username  = userInput.value.trim();
-      const worker    = workerInput.value.trim();
-      statusEl.style.color = 'var(--gold2, #b8985a)';
+      const worker = workerInput.value.trim();
+      statusEl.style.color = 'var(--ink-soft, #b8985a)';
       statusEl.textContent = 'Creating account…';
 
       const d = getData();
-      if(firstName) d.firstName = firstName;
-      if(lastName)  d.lastName  = lastName;
-      if(username)  d.username  = username;
       d.workerUrl  = worker.replace(/\/+$/, '');
       d.authMethod = 'token';
       C.setData(d);
 
       const ok = await C.pushToWorker();
       if(!ok) {
-        statusEl.style.color = 'var(--red, #c07070)';
-        statusEl.textContent = 'Could not reach Worker URL — check it and try again.';
+        statusEl.style.color = 'var(--rubric, #c07070)';
+        statusEl.textContent = 'Could not reach that address — check it and try again.';
         d.workerUrl = '';
         C.setData(d);
         return;
@@ -1310,47 +1281,37 @@ const Auth = (() => {
       C.closeModal('modal-account-setup');
       C.startSyncPing();
       C.onSignedIn(d, true);
-      C.toast(`Welcome${firstName ? ', ' + firstName : ''} ${appEmoji()}`);
+      C.toast(`Account created ${appEmoji()}`);
     });
 
     // ── Google path ─────────────────────────────────────────────
     if(isGoogleAuthAvailable()) {
       document.getElementById('auth-btn-fresh-google')?.addEventListener('click', async () => {
         if(!validate()) return;
-        const firstName = firstInput.value.trim();
-        const lastName  = lastInput.value.trim();
-        const username  = userInput.value.trim();
-        const worker    = workerInput.value.trim();
-        statusEl.style.color = 'var(--gold2, #b8985a)';
+        const worker = workerInput.value.trim();
+        statusEl.style.color = 'var(--ink-soft, #b8985a)';
         statusEl.textContent = 'Testing connection…';
 
         const d = getData();
-        if(firstName) d.firstName = firstName;
-        if(lastName)  d.lastName  = lastName;
-        if(username)  d.username  = username;
-        d.workerUrl  = worker.replace(/\/+$/, '');
+        d.workerUrl = worker.replace(/\/+$/, '');
         C.setData(d);
 
         const ok = await testWorkerUrl(d.workerUrl);
         if(!ok) {
-          statusEl.style.color = 'var(--red, #c07070)';
-          statusEl.textContent = 'Could not reach Worker URL — check it and try again.';
+          statusEl.style.color = 'var(--rubric, #c07070)';
+          statusEl.textContent = 'Could not reach that address — check it and try again.';
           d.workerUrl = '';
           C.setData(d);
           return;
         }
 
         statusEl.textContent = 'Connected — opening Google sign-in…';
-        showSetupFreshGoogle(firstName, lastName, username, worker);
+        showSetupFreshGoogle(worker);
       });
     }
   }
 
-  // ── SFG: Fresh Google sign-in step ──────────────────────────────
-  // Final step for "start fresh with Google". Data already set on D
-  // before this screen is shown. Google button renders immediately.
-  // HOST APP INTERFACE: calls getData(), setData(), startSyncPing()
-  function showSetupFreshGoogle(firstName, lastName, username, workerUrl) {
+  function showSetupFreshGoogle(workerUrl) {
     setupScreen('Link Google Account', `
       <p class="f13 lh muted" style="margin-bottom:1rem;">
         Sign in with Google to secure your new account.
@@ -1368,30 +1329,21 @@ const Auth = (() => {
     const statusEl  = document.getElementById('auth-fresh-status');
 
     const d = getData();
-    if(firstName) d.firstName = firstName;
-    if(lastName)  d.lastName  = lastName;
-    if(username)  d.username  = username;
-    d.workerUrl  = workerUrl.replace(/\/+$/, '');
+    d.workerUrl = workerUrl.replace(/\/+$/, '');
     C.setData(d);
 
     signInWithGoogle(container).then(result => {
       if(result?.ok) {
         C.closeModal('modal-account-setup');
-        C.toast(`Welcome${firstName ? ', ' + firstName : ''} ${appEmoji()}`);
+        C.toast(`Account created ${appEmoji()}`);
         C.startSyncPing();
       } else {
-        statusEl.style.color = 'var(--red, #c07070)';
+        statusEl.style.color = 'var(--rubric, #c07070)';
         statusEl.textContent = 'Sign-in cancelled — try again or go back.';
       }
     });
   }
 
-  // ── Token → Google upgrade (called from Settings) ────────────────
-  // One-way permanent migration. Worker URL pre-filled and pre-tested
-  // if already configured. Token captured BEFORE signInWithGoogle runs
-  // because handleGoogleCredential overwrites D.userToken with the
-  // Google KV key — reading it after would give the wrong value.
-  // HOST APP INTERFACE: calls getData(), setData(), workerBase(), startSyncPing()
   function showGoogleUpgradeFlow() {
     const d = getData();
     setupScreen('Upgrade to Google Sign-In', `
