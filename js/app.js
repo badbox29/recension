@@ -898,6 +898,14 @@ function ensureEditor() {
 // every scroll and the text just fills to the bottom. The only thing that
 // matters is the caret's pixel height, so that is what's measured.
 
+// Extra slack BELOW the text, so the last lines of a scene can still be
+// pulled up to the hold line. Nothing is added above: the scene should
+// open at the top exactly as it does with the mode off.
+function applyTypewriterMode(on) {
+  document.documentElement.classList.toggle('typewriter', !!on);
+  App.editor?.codemirror?.refresh();
+}
+
 // Where the caret comes to rest, as a fraction of the visible height.
 // Slightly above centre — dead centre leaves so much blank below that it
 // reads as writing into a void.
