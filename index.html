@@ -35,6 +35,20 @@
 
   <div class="bar-end">
     <!-- Live word count. The one number a drafting session actually cares about. -->
+    <div class="view-ctl" id="view-ctl">
+      <button class="icon-btn" id="btn-measure" aria-label="Text width" title="Text width">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 5v10M18 5v10M5 10h10M5 10l2-2M5 10l2 2M15 10l-2-2M15 10l-2 2"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-size" aria-label="Text size" title="Text size">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 15l4.5-11L12 15M4.6 11.5h5.8M13.5 15l3-7 3 7M14.6 12.8h3.8"/></svg>
+      </button>
+    </div>
+    <button class="icon-btn" id="btn-read" aria-label="Read the whole manuscript" aria-pressed="false">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 5.5C8.6 4.5 6.9 4 5 4H2.5v11H5c1.9 0 3.6.5 5 1.5 1.4-1 3.1-1.5 5-1.5h2.5V4H15c-1.9 0-3.6.5-5 1.5zM10 5.5v11"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-type" aria-label="Text size and width" aria-expanded="false">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 15L6.5 5l4 10M3.8 12h5.4M12 15l3-7 3 7M13 13h4"/></svg>
+    </button>
     <output class="tally" id="tally" aria-live="off"></output>
     <span class="sync-dot" id="sync-dot" title="Saved" data-state="idle"></span>
     <button class="icon-btn" id="btn-settings" aria-label="Settings">
@@ -71,6 +85,21 @@
       <button class="solid-btn" id="btn-empty-new">Start a scene</button>
     </div>
 
+    <!-- Continuous reading view: a part, a chapter, or the whole
+         manuscript rendered as one page. Clicking a paragraph opens that
+         scene for editing at that spot. -->
+    <section class="readview" id="readview" hidden>
+      <header class="read-head">
+        <h1 id="read-title"></h1>
+        <p class="read-sub" id="read-sub"></p>
+        <label class="read-toggle">
+          <input type="checkbox" id="read-show-titles" />
+          <span>Scene titles</span>
+        </label>
+      </header>
+      <div class="read-body" id="read-body"></div>
+    </section>
+
     <article class="scene" id="scene" hidden>
       <!-- Title is edited in place. A separate field for it would put a form
            between the writer and the page. -->
@@ -103,6 +132,10 @@
       <!-- Mobile and any read-only context render here instead of the editor. -->
       <div class="reading" id="reading" hidden></div>
     </article>
+
+    <!-- Continuous read-through. Scenes concatenated in tree order, each
+         anchored so scroll position maps back to a real scene. -->
+    <section class="readview" id="readview" hidden aria-label="Continuous text"></section>
   </main>
 </div>
 
@@ -170,6 +203,27 @@
       </div>
     </div>
   </div>
+</div>
+
+<!-- Text size and measure. Per-device, not synced — it depends on the
+     monitor you're sitting at, not on the manuscript. -->
+<div class="popover" id="type-popover" hidden>
+  <div class="pop-group" role="group" aria-label="Line width">
+    <span>Width</span>
+    <button data-measure="narrow">Narrow</button>
+    <button data-measure="book">Book</button>
+    <button data-measure="wide">Wide</button>
+  </div>
+  <div class="pop-group" role="group" aria-label="Text size">
+    <span>Size</span>
+    <button data-size="sm">Small</button>
+    <button data-size="md">Medium</button>
+    <button data-size="lg">Large</button>
+  </div>
+  <label class="pop-row">
+    <span>Scene titles while reading</span>
+    <input type="checkbox" id="pop-titles" />
+  </label>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
