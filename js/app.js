@@ -866,21 +866,55 @@ function ensureEditor() {
   App.editor.codemirror.on('change', () => {
     scheduleSave();
     updateTally();
-    if (App.data.typewriter) centerCursor();
+  });
+  // cursorActivity covers typing, arrow keys, and clicks alike — all the
+  // ways the caret can end up on a different line.
+  App.editor.codemirror.on('cursorActivity', () => {
+    if (App.data.typewriter) typewriterScroll();
   });
   return App.editor;
 }
 
-// Typewriter scrolling: keep the caret near the vertical middle instead of
-// letting it walk to the bottom edge of the window.
-function centerCursor() {
+// ── Typewriter scrolling ───────────────────────────────────────────
+//
+// Holds the line you're typing at a fixed height on screen — the text
+// moves past a stationary caret, like a typewriter carriage — instead of
+// letting the caret walk down to the bottom edge.
+//
+// Two things matter for getting this right:
+//
+// 1. COORDINATE SPACE. CodeMirror runs here in auto-height mode with its
+//    own scrolling disabled; the scroller is #sheet. So getScrollInfo()
+//    reports the whole document's height, not a viewport, and 'local'
+//    cursor coords are relative to CodeMirror rather than the page.
+//    Everything below works in viewport coordinates and adjusts #sheet.
+//
+// 2. WHEN TO FIRE. Recentring on every keystroke makes the page twitch
+//    under you mid-word. It should only move when the caret changes LINE,
+//    which is the only time its height on screen actually changed.
+
+let _lastCaretLine = -1;
+
+function typewriterScroll(force = false) {
   const cm = App.editor?.codemirror;
   if (!cm) return;
-  const cursor = cm.cursorCoords(null, 'local');
-  const target = cm.getScrollInfo().clientHeight / 2;
+
+  const line = cm.getCursor().line;
+  if (!force && line === _lastCaretLine) return;
+  _lastCaretLine = line;
+
   const sheet = $('sheet');
-  const rect = $('prose').getBoundingClientRect();
-  sheet.scrollTop += (cursor.top + rect.top) - target - sheet.getBoundingClientRect().top;
+  const caret = cm.cursorCoords(null, 'window');   // viewport coords
+  const view  = sheet.getBoundingClientRect();
+
+  // Sit a little above true centre. Dead centre leaves so much blank space
+  // below the caret that it reads as writing into a void; 42% keeps a few
+  // lines of context visible underneath.
+  const target = view.top + view.height * 0.42;
+  const delta  = caret.top - target;
+
+  if (Math.abs(delta) < 2) return;                 // ignore sub-pixel drift
+  sheet.scrollTop += delta;
 }
 
 function updateTally() {
@@ -974,6 +1008,7 @@ async function openScene(id) {
     }
     cm.refresh();
     cm.clearHistory();   // undo must not cross scene boundaries
+    _lastCaretLine = -1; // a new scene starts a fresh caret-line memo
   }
 
   updateTally();
@@ -1169,6 +1204,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('set-typewriter').addEventListener('change', e => {
     App.data.typewriter = e.target.checked;
     saveAccount();
+    if (e.target.checked) typewriterScroll(true);
   });
   $('set-worker').addEventListener('change', e => {
     App.data.workerUrl = e.target.value.trim().replace(/\/+$/, '');
