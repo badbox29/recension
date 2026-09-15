@@ -1248,3 +1248,86 @@ html.typewriter .scene { padding-bottom: 0; }
   .cf-key { text-align: left; }
   .card-add-field { margin-left: 0; }
 }
+
+/* ══ Events ════════════════════════════════════════════════════════ */
+
+/* Kind mark in the margin — a dagger for a death, an infinity for a
+   marriage. Same idea as the scene status marks: a glyph reads faster
+   than a coloured pill and doesn't shout. */
+.ev-mark {
+  flex: none;
+  width: 0.875rem;
+  font-family: var(--prose);
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  text-align: center;
+}
+.ev-row { padding-left: 0.375rem; }
+.ev-row[aria-current="true"] .ev-mark { color: var(--rubric); }
+
+/* Year headings carry the figures, so they get the prose face. */
+.toc-group-label.ev-year {
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.ev-when {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 1rem;
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.ev-when .note { grid-column: 1 / -1; margin: 0; }
+.ev-when .note.bad { color: var(--rubric); }
+
+.ev-block { margin-bottom: 1.5rem; }
+.ev-block > label {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  margin-bottom: 0.5rem;
+}
+
+.ev-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-bottom: 0.5rem; }
+
+.ev-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--prose);
+  font-size: var(--t-sm);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+}
+/* A participant whose card was deleted. Flagged rather than dropped —
+   silently removing it would hide the fact that something is missing. */
+.ev-chip.missing { border-color: var(--rubric-dim); color: var(--rubric); font-style: italic; }
+
+.ev-chip-x {
+  background: none; border: 0; cursor: pointer;
+  color: var(--ink-faint); font-size: var(--t-md); line-height: 1; padding: 0 0.125rem;
+}
+.ev-chip-x:hover { color: var(--rubric); }
+
+#ev-add-participant {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  background: none;
+  border: 1px dashed var(--rule);
+  border-radius: 2px;
+  padding: 0.25rem 0.375rem;
+  cursor: pointer;
+}
+#ev-add-participant:disabled { opacity: .45; cursor: default; }
+
+@media (max-width: 44rem) {
+  .ev-when { grid-template-columns: 1fr; }
+}
