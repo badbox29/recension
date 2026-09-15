@@ -1470,3 +1470,93 @@ html.typewriter .scene { padding-bottom: 0; }
   cursor: pointer;
 }
 .choice:hover { border-color: var(--ink-faint); background: var(--paper); }
+
+/* ══ Wikilinks ═════════════════════════════════════════════════════
+   [[Card Name]] inline in the prose. Links are marked, not decorated:
+   the reading surface should still read as prose, so no underline, no
+   button styling, just a tint and the brackets held back. */
+
+.prose .cm-wikilink { color: var(--rubric); }
+.prose .cm-wikilink-open { color: var(--ink-faint); }
+
+/* A link to a card that doesn't exist should LOOK wrong — usually it's
+   a typo, or someone you meant to write up. */
+.prose .cm-wikilink-unknown {
+  color: var(--ink-faint);
+  text-decoration: underline dotted var(--rubric-dim);
+  text-underline-offset: 3px;
+}
+
+/* Rendered links, in the read view and the mobile reading pane. */
+a.wl {
+  color: var(--rubric);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--rubric) 30%, transparent);
+}
+a.wl:hover { border-bottom-color: var(--rubric); }
+a.wl.unknown {
+  color: var(--ink-soft);
+  border-bottom: 1px dotted var(--rubric-dim);
+}
+
+/* ── Autocomplete ──────────────────────────────────────────────── */
+
+.wl-complete {
+  position: fixed;
+  z-index: 75;
+  min-width: 14rem;
+  max-width: 20rem;
+  background: var(--vellum);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.1875rem;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.wl-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3125rem 0.5rem;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: var(--t-sm);
+}
+.wl-item.on, .wl-item:hover { background: var(--rule-soft); }
+
+.wl-name { font-family: var(--prose); color: var(--ink); }
+
+/* Which alias matched, so two similar characters can be told apart
+   without opening both. */
+.wl-via {
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.wl-kind {
+  margin-left: auto;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+
+/* ── Appears in ────────────────────────────────────────────────── */
+
+.card-appears { display: flex; flex-direction: column; gap: 1px; }
+
+.appears-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  border-left: 2px solid var(--rule);
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+.appears-row:hover { color: var(--ink); background: var(--rule-soft); border-left-color: var(--rubric); }
+.appears-title { font-family: var(--prose); }
