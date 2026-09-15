@@ -235,6 +235,10 @@ const RecordStore = (() => {
     const text = md
       .replace(/```[\s\S]*?```/g, ' ')      // fenced code
       .replace(/`[^`]*`/g, ' ')             // inline code
+      // Wikilinks count as what they READ as. [[Angel Six|Angel]] is one
+      // word on the page, not three — and the hidden target isn't prose.
+      .replace(/\[\[([^\[\]|]+)\|([^\[\]]+)\]\]/g, '$2')
+      .replace(/\[\[([^\[\]]+)\]\]/g, '$1')
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1') // links/images → label only
       .replace(/^[#>\-*+\s]+/gm, ' ')       // headings, quotes, bullets
       .replace(/[*_~]/g, '');

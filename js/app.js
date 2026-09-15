@@ -1060,6 +1060,9 @@ function ensureEditor() {
     // enough for a link to colour itself as soon as you close it.
     clearTimeout(_overlayTimer);
     _overlayTimer = setTimeout(refreshWikilinkOverlay, 300);
+    // Conceal sooner than the overlay: leaving raw [[...]] on screen for
+    // a third of a second after every keystroke is very visible.
+    concealWikilinks(cm);
   });
 
   // Keydown is captured before CodeMirror handles it, so arrow keys and
@@ -1103,6 +1106,7 @@ function ensureEditor() {
   // ways the caret can end up on a different line.
   cm.on('cursorActivity', () => {
     if (App.data.typewriter) typewriterScroll();
+    concealWikilinks(cm);
   });
   return App.editor;
 }
@@ -1467,6 +1471,13 @@ function authorByline() {
 // A backup only a human can read isn't a backup, and a manuscript with
 // folder structure in it isn't a manuscript. Hence both.
 
+// Reduce [[Target|words]] to "words", and [[Target]] to "Target".
+function stripWikilinks(text) {
+  return (text || '')
+    .replace(/\[\[([^\[\]|]+)\|([^\[\]]+)\]\]/g, '$2')
+    .replace(/\[\[([^\[\]]+)\]\]/g, '$1');
+}
+
 function slug(s, fallback = 'untitled') {
   const out = (s || '').trim().toLowerCase()
     .replace(/[\u2018\u2019\u201C\u201D'"]/g, '')
@@ -1567,7 +1578,9 @@ async function compileText(scope = { kind: 'all', id: null }) {
       parts.push('\n#\n');
     }
     first = false;
-    parts.push((rec.body || '').trim());
+    // Links are an authoring aid, not part of the manuscript. A reader
+    // or an agent should get the prose, not [[Angel Six|Angel]].
+    parts.push(stripWikilinks((rec.body || '').trim()));
   }
   return parts.join('\n') + '\n';
 }
@@ -1609,6 +1622,9 @@ async function exportBackup() {
     const head = [`# ${rec.title || 'Untitled scene'}`];
     if (rec.synopsis) head.push('', `> ${rec.synopsis}`);
     if (rec.pov)      head.push('', `POV: ${rec.pov}`);
+    // Links are KEPT here. This copy exists to restore from, and
+    // stripping them would make the backup lossy — compiled.md in the
+    // same zip is the reader-facing version.
     head.push('', (rec.body || '').trim(), '');
     files[`${path}/${pad(i + 1)}-${slug(rec.title, 'scene')}.md`] = enc(head.join('\n'));
   };
@@ -2337,6 +2353,48 @@ function wikilinkOverlay(index) {
   };
 }
 
+// ── Conceal ────────────────────────────────────────────────────────
+//
+// Hide the machinery of a link and show only the words. [[Angel Six|
+// Angel]] reads as "Angel", tinted, exactly as it will on the page —
+// the target is something you chose, not something you need to keep
+// re-reading.
+//
+// The link reveals itself whenever the caret is inside it, so editing
+// one is never a matter of guessing what you're editing. Marks are
+// atomic, so arrow keys step over a concealed bracket pair rather than
+// into the middle of it.
+
+function concealWikilinks(cm) {
+  for (const m of cm._wlMarks || []) m.clear();
+  cm._wlMarks = [];
+
+  const cur = cm.getCursor();
+  const doc = cm.getValue().split('\n');
+
+  doc.forEach((line, ln) => {
+    for (const m of line.matchAll(/\[\[([^\[\]|]+)(?:\|([^\[\]]+))?\]\]/g)) {
+      const start = m.index;
+      const end = start + m[0].length;
+
+      // Caret inside (or touching) this link — show it in full so it
+      // can be edited.
+      if (cur.line === ln && cur.ch >= start && cur.ch <= end) continue;
+
+      // Everything up to and including the pipe, or just the opening
+      // brackets when there is no pipe.
+      const headLen = m[2] !== undefined ? 2 + m[1].length + 1 : 2;
+
+      cm._wlMarks.push(cm.markText(
+        { line: ln, ch: start }, { line: ln, ch: start + headLen },
+        { collapsed: true, atomic: true }));
+      cm._wlMarks.push(cm.markText(
+        { line: ln, ch: end - 2 }, { line: ln, ch: end },
+        { collapsed: true, atomic: true }));
+    }
+  });
+}
+
 async function refreshWikilinkOverlay() {
   const cm = App.editor?.codemirror;
   if (!cm) return;
@@ -2344,6 +2402,7 @@ async function refreshWikilinkOverlay() {
   if (cm._wlOverlay) cm.removeOverlay(cm._wlOverlay);
   cm._wlOverlay = wikilinkOverlay(index);
   cm.addOverlay(cm._wlOverlay);
+  concealWikilinks(cm);
 }
 
 // ── Autocomplete ───────────────────────────────────────────────────
