@@ -1016,15 +1016,25 @@ const Auth = (() => {
   // worker URL is confirmed reachable. This prevents the "no worker URL"
   // error that occurs when handleGoogleCredential fires without a base URL.
   // HOST APP INTERFACE: calls getData(), startSyncPing()
+  // RECENSION NOTE: the Worker URL is prefilled from what the host already
+  // has, and when it's present the Google button unlocks on its own. The
+  // stock screen always rendered an empty field and made you retype an
+  // address you had already saved — and which you had to have saved for
+  // this screen to be reachable at all, since that's where the Google
+  // client ID comes from.
   function showSetupLoadGoogle() {
+    const existingWorker = getData()?.workerUrl || '';
     setupScreen('Sign in with Google', `
       <p class="f13 lh muted" style="margin-bottom:1rem;">
-        Enter your Worker URL to connect, then sign in with Google.
+        ${existingWorker
+          ? 'Sign in with Google to load your account.'
+          : 'Enter your Worker URL to connect, then sign in with Google.'}
       </p>
       <div class="form-group">
         <label class="form-label">Worker URL</label>
         <div class="row gap-8">
           <input class="input" id="auth-setup-worker-url"
+                 value="${_esc(existingWorker)}"
                  placeholder="https://your-worker.workers.dev" style="flex:1;"/>
           <button class="btn btn-outline btn-sm" id="auth-btn-test-worker"
                   style="white-space:nowrap;">Test</button>
@@ -1046,6 +1056,10 @@ const Auth = (() => {
     const workerInput = document.getElementById('auth-setup-worker-url');
     const statusEl    = document.getElementById('auth-setup-status');
     const googleCtr   = document.getElementById('auth-google-btn-container');
+
+    // A saved address means the connection is already known to work —
+    // don't make the user press Test to prove it again.
+    if (existingWorker) setTimeout(() => unlockGoogle(), 0);
 
     async function unlockGoogle() {
       const url = workerInput.value.trim();
