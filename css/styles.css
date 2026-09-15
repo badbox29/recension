@@ -1420,3 +1420,53 @@ html.typewriter .scene { padding-bottom: 0; }
   color: var(--ink-soft);
 }
 .btn-outline:hover { color: var(--ink); border-color: var(--ink-faint); }
+
+/* ══ Four-level tree ═══════════════════════════════════════════════
+   work → part → chapter → scene, with part optional. Indentation is the
+   only thing distinguishing the tiers, so it has to be unambiguous — a
+   chapter inside a part must never line up with one that isn't. */
+
+.toc-work {
+  font-family: var(--prose);
+  font-size: var(--t-md);
+  font-weight: 600;
+  padding: 0.875rem 0.375rem 0.25rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  cursor: pointer;
+}
+.toc-work:first-child { padding-top: 0.25rem; }
+.toc-work .caret { color: var(--ink-faint); font-size: 0.625rem; flex: none; }
+
+/* A part is subordinate to the work: same weight, smaller, indented. */
+.toc-part {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  padding-left: 1.125rem;
+}
+
+/* Chapters shift right again when they sit inside a part. */
+.toc-chapter.in-part { padding-left: 2rem; }
+.toc-chapter.in-part + .toc-scene,
+.toc-scene.in-part { padding-left: 2.75rem; }
+.toc-add.in-part { padding-left: 2.75rem; }
+.toc-add-chapter.in-part { padding-left: 2rem; }
+
+/* "+ part" under a work, rather than at the top level. */
+.toc-add-part-inner { padding-left: 1.125rem; }
+
+/* Choice picker — same modal furniture as the name prompt. */
+.choice-list { display: flex; flex-direction: column; gap: 0.375rem; }
+.choice {
+  font-family: var(--prose);
+  font-size: var(--t-md);
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.5rem 0.625rem;
+  cursor: pointer;
+}
+.choice:hover { border-color: var(--ink-faint); background: var(--paper); }
