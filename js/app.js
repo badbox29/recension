@@ -1055,7 +1055,7 @@ function ensureEditor() {
   cm.on('change', () => {
     scheduleSave();
     updateTally();
-    updateAutocomplete();
+    if (_acMode !== 'wrap') updateAutocomplete();
     // Re-tokenising on every keystroke is wasted work; a short settle is
     // enough for a link to colour itself as soon as you close it.
     clearTimeout(_overlayTimer);
@@ -1081,17 +1081,21 @@ function ensureEditor() {
     followLink(target);
   });
 
-  // Select a name and press [ to wrap it: "Angel" → "[[Angel]]".
-  // Typing [[ in front of existing text inserts a link BESIDE it, which
-  // is correct but rarely what you meant — this is the gesture for
-  // linking words already on the page.
+  // Select words and press [ to link them. The picker opens and YOUR
+  // WORDS STAY AS WRITTEN — "Angel's" keeps its apostrophe and still
+  // points at Angel Six, via [[Angel Six|Angel's]]. Typing [[ at a
+  // caret is the other gesture: insert a link here, using the card's
+  // own name.
   cm.on('beforeChange', (_cm, change) => {
     if (change.origin !== '+input' || change.text.join('') !== '[') return;
     if (!_cm.somethingSelected()) return;
     const sel = _cm.getSelection();
     if (!sel.trim() || sel.includes('\n')) return;
-    change.update(change.from, change.to, [`[[${sel}]]`]);
-    setTimeout(() => refreshWikilinkOverlay(), 0);
+
+    change.cancel();   // don't type the bracket; open the picker instead
+    _acMode = 'wrap';
+    _acWrap = { from: _cm.getCursor('from'), to: _cm.getCursor('to'), text: sel };
+    updateAutocomplete(sel);
   });
 
   cm.on('blur', () => setTimeout(closeAutocomplete, 120));
@@ -2346,11 +2350,23 @@ async function refreshWikilinkOverlay() {
 
 let _acBox = null, _acItems = [], _acIndex = 0, _acFrom = null;
 
+// Two ways to make a link, and the popup serves both.
+//
+//   'type'  you typed [[ and are choosing a card. The card's name goes
+//           into the prose.
+//   'wrap'  you selected words and pressed [. The PROSE IS UNTOUCHED;
+//           the chosen card becomes the link target behind it, using
+//           [[Target|your words]]. "Angel's" stays "Angel's" and still
+//           points at Angel Six.
+let _acMode = 'type', _acWrap = null;
+
 function closeAutocomplete() {
   _acBox?.remove();
   _acBox = null;
   _acItems = [];
   _acFrom = null;
+  _acMode = 'type';
+  _acWrap = null;
 }
 
 // Look back from the caret for an unclosed [[ on this line. Returns the
@@ -2364,14 +2380,19 @@ function wikilinkContext(cm) {
   return { from: { line: cur.line, ch: open + 2 }, query: line.slice(open + 2) };
 }
 
-async function updateAutocomplete() {
+async function updateAutocomplete(forcedQuery = null) {
   const cm = App.editor?.codemirror;
   if (!cm) return closeAutocomplete();
 
-  const ctx = wikilinkContext(cm);
-  if (!ctx) return closeAutocomplete();
-
-  const q = ctx.query.trim().toLowerCase();
+  let q;
+  if (forcedQuery !== null) {
+    q = forcedQuery.trim().toLowerCase();
+  } else {
+    const ctx = wikilinkContext(cm);
+    if (!ctx) return closeAutocomplete();
+    _acFrom = ctx.from;
+    q = ctx.query.trim().toLowerCase();
+  }
   const cards = Object.values(await RecordStore.getAll('card'));
 
   // Name matches before alias matches, prefix before substring — the
@@ -2390,8 +2411,15 @@ async function updateAutocomplete() {
   }
   scored.sort((x, y) => x.rank - y.rank || (x.card.name || '').localeCompare(y.card.name || ''));
 
+  // In wrap mode an exact hit isn't required — the words you selected
+  // ("Angel's") often won't match any card name, and the whole point is
+  // to pick the target yourself. So fall back to the full list.
+  if (!scored.length && _acMode === 'wrap') {
+    for (const c of cards) scored.push({ card: c, rank: 9, via: null });
+    scored.sort((x, y) => (x.card.name || '').localeCompare(y.card.name || ''));
+  }
+
   _acItems = scored.slice(0, 8);
-  _acFrom = ctx.from;
   _acIndex = 0;
   if (!_acItems.length) return closeAutocomplete();
   drawAutocomplete(cm);
@@ -2402,6 +2430,8 @@ function drawAutocomplete(cm) {
     _acBox = el('div', 'wl-complete');
     document.body.append(_acBox);
   }
+  _acBox.dataset.mode = _acMode;
+  if (_acMode === 'wrap') _acBox.dataset.text = _acWrap?.text || '';
   _acBox.replaceChildren();
 
   _acItems.forEach((it, i) => {
@@ -2415,20 +2445,34 @@ function drawAutocomplete(cm) {
     _acBox.append(row);
   });
 
-  const co = cm.cursorCoords(true, 'window');
+  const anchor = _acMode === 'wrap' && _acWrap ? _acWrap.to : true;
+  const co = cm.cursorCoords(anchor, 'window');
   _acBox.style.top = `${co.bottom + 4}px`;
   _acBox.style.left = `${Math.min(co.left, window.innerWidth - 260)}px`;
 }
 
 function acceptAutocomplete(cm, i = _acIndex) {
   const item = _acItems[i];
-  if (!item || !_acFrom) return closeAutocomplete();
+  if (!item) return closeAutocomplete();
+
+  if (_acMode === 'wrap' && _acWrap) {
+    const { from, to, text } = _acWrap;
+    // Use the pipe form only when the words differ from the card name —
+    // [[Angel Six|Angel Six]] is noise.
+    const same = text.trim().toLowerCase() === (item.card.name || '').toLowerCase();
+    const out = same ? `[[${text}]]` : `[[${item.card.name}|${text}]]`;
+    cm.replaceRange(out, from, to);
+    cm.setCursor({ line: to.line, ch: from.ch + out.length });
+    closeAutocomplete();
+    refreshWikilinkOverlay();
+    return;
+  }
+
+  if (!_acFrom) return closeAutocomplete();
   const cur = cm.getCursor();
-  // Include a closing ]] only if one isn't already sitting there.
   const rest = cm.getLine(cur.line).slice(cur.ch);
   const closing = rest.startsWith(']]') ? '' : ']]';
   cm.replaceRange(item.card.name + closing, _acFrom, cur);
-  if (!closing) cm.setCursor({ line: cur.line, ch: cur.ch - (cur.ch - _acFrom.ch) + item.card.name.length + 2 });
   closeAutocomplete();
   refreshWikilinkOverlay();
 }
