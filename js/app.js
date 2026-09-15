@@ -49,6 +49,7 @@ const App = {
   view: 'edit',
   readScope: { kind: 'all', id: null },
   section: 'manuscript',   // which rail is showing: manuscript | cards
+  tlZoom: 1,
   activeCard: null,
   activeEvent: null,
   lastCardType: 'character',
@@ -820,6 +821,7 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
   $('empty').hidden = true;
   $('scene').hidden = true;
   $('readview').hidden = false;
+  $('timeline-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'true');
 
   await renderReadView();
@@ -1250,6 +1252,7 @@ async function openScene(id) {
   $('card-edit').hidden = true;
   $('event-edit').hidden = true;
   $('readview').hidden = true;
+  $('timeline-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
@@ -1814,6 +1817,7 @@ async function openCard(id) {
   $('empty').hidden = true;
   $('scene').hidden = true;
   $('event-edit').hidden = true;
+  $('timeline-wrap').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2137,7 +2141,7 @@ async function openEvent(id) {
   App.activeCard = null;
   App.view = 'edit';
 
-  for (const h of ['readview', 'empty', 'scene', 'card-edit']) $(h).hidden = true;
+  for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap']) $(h).hidden = true;
   $('event-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2742,6 +2746,197 @@ async function runImport(file) {
   showToast(parts.length ? `Imported: ${parts.join(', ')}.` : 'Nothing to import.', 6000);
 }
 
+// ══ Timeline ═══════════════════════════════════════════════════════
+//
+// A lane per person, time across the page. This is the view that makes
+// events worth being records: a character's lane shows their whole life
+// at once — born, married, divorced, died — including everything that
+// happens offscreen and will never appear in a scene.
+//
+// Drawn as inline SVG. No library: axis ticks, bars and dots are a few
+// dozen lines of geometry, and a chart library would bring styling that
+// fights the rest of the app.
+//
+// PRECISION IS HONOURED. An event recorded as "1892" draws as a band
+// across that year, not a point on 1 January. Pretending to know the
+// day is how a timeline starts lying to you.
+
+// Fractional year, so a day-precision date sits in the right place
+// within its year. Returns null for anything unparseable.
+function toYear(iso) {
+  if (!iso) return null;
+  const neg = String(iso).startsWith('-');
+  const [datePart] = String(iso).replace(/^-/, '').split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  if (!y && y !== 0) return null;
+  const year = (neg ? -y : y) + ((m || 1) - 1) / 12 + ((d || 1) - 1) / 365;
+  return year;
+}
+
+// How wide an event is in years, given its precision. A year-precision
+// event covers its whole year; a minute-precision one is a point.
+function spanYears(precision) {
+  return { year: 1, month: 1 / 12, day: 1 / 365, minute: 0 }[precision] ?? 1 / 365;
+}
+
+const TL = {
+  laneH: 30, padTop: 34, padLeft: 150, padRight: 24, minPxPerYear: 8,
+};
+
+async function renderTimeline() {
+  const host = $('timeline');
+  host.replaceChildren();
+
+  const [allEvents, cards] = await Promise.all([
+    RecordStore.getAll('event'), RecordStore.getAll('card'),
+  ]);
+  const events = Object.values(allEvents).filter(eventMatches).filter(e => toYear(e.start) !== null);
+
+  if (!events.length) {
+    host.append(el('p', 'rv-empty',
+      'Nothing dated to plot yet. Give an event a year and it appears here.'));
+    return;
+  }
+
+  // ── Lanes: one per person who takes part, plus a catch-all ──
+  // Sorted by first appearance, so the page reads chronologically
+  // downward as well as rightward.
+  const laneOf = new Map();
+  for (const e of events) {
+    const ids = (e.participants || []).filter(id => cards[id]);
+    if (!ids.length) {
+      // Events with nobody attached still belong on the page — a war
+      // starting isn't about one person, and hiding it would make the
+      // timeline quietly incomplete.
+      if (!laneOf.has('~')) laneOf.set('~', []);
+      laneOf.get('~').push(e);
+      continue;
+    }
+    for (const id of ids) {
+      if (!laneOf.has(id)) laneOf.set(id, []);
+      laneOf.get(id).push(e);
+    }
+  }
+
+  const lanes = [...laneOf.entries()]
+    .map(([id, evs]) => ({
+      id,
+      name: id === '~' ? 'No one named' : cards[id].name,
+      events: evs.sort((x, y) => toYear(x.start) - toYear(y.start)),
+      first: Math.min(...evs.map(e => toYear(e.start))),
+    }))
+    .sort((a, b) => a.first - b.first);
+
+  // ── Scale ──
+  const years = events.map(e => toYear(e.start));
+  const ends  = events.map(e => toYear(e.end) ?? toYear(e.start) + spanYears(e.precision));
+  let minY = Math.floor(Math.min(...years));
+  let maxY = Math.ceil(Math.max(...ends));
+  if (maxY - minY < 2) maxY = minY + 2;           // a single year needs room
+  const pad = Math.max(1, Math.round((maxY - minY) * 0.04));
+  minY -= pad; maxY += pad;
+
+  const avail = Math.max(520, host.clientWidth || 720);
+  const pxPerYear = Math.max(TL.minPxPerYear * App.tlZoom,
+                             (avail - TL.padLeft - TL.padRight) / (maxY - minY));
+  const width  = TL.padLeft + TL.padRight + (maxY - minY) * pxPerYear;
+  const height = TL.padTop + lanes.length * TL.laneH + 16;
+  const x = yr => TL.padLeft + (yr - minY) * pxPerYear;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.classList.add('tl-svg');
+
+  const mk = (tag, attrs, text) => {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  // ── Axis ──
+  // Tick every 1, 2, 5, 10… years, whichever keeps labels from colliding.
+  const target = 90;                                   // px between labels
+  const raw = target / pxPerYear;
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500]
+    .find(s => s >= raw) || 1000;
+
+  for (let yr = Math.ceil(minY / step) * step; yr <= maxY; yr += step) {
+    svg.append(mk('line', {
+      x1: x(yr), y1: TL.padTop - 12, x2: x(yr), y2: height - 8, class: 'tl-grid',
+    }));
+    svg.append(mk('text', {
+      x: x(yr), y: TL.padTop - 18, class: 'tl-tick', 'text-anchor': 'middle',
+    }, yr < 0 ? `${-yr} BCE` : String(yr)));
+  }
+
+  // ── Lanes ──
+  lanes.forEach((lane, i) => {
+    const y = TL.padTop + i * TL.laneH + TL.laneH / 2;
+
+    svg.append(mk('text', {
+      x: TL.padLeft - 12, y: y + 4, class: 'tl-lane-name', 'text-anchor': 'end',
+    }, lane.name));
+
+    svg.append(mk('line', { x1: TL.padLeft, y1: y, x2: width - TL.padRight, y2: y, class: 'tl-rule' }));
+
+    // A life bar: birth to death, when both are known. It's the spine
+    // the rest of a character's events hang on.
+    const birth = lane.events.find(e => e.kind === 'birth');
+    const death = lane.events.find(e => e.kind === 'death');
+    if (birth && death) {
+      svg.append(mk('line', {
+        x1: x(toYear(birth.start)), y1: y, x2: x(toYear(death.start)), y2: y,
+        class: 'tl-life',
+      }));
+    }
+
+    for (const e of lane.events) {
+      const start = toYear(e.start);
+      const end = toYear(e.end) ?? start + spanYears(e.precision);
+      const w = Math.max(3, (end - start) * pxPerYear);
+
+      const g = mk('g', { class: 'tl-ev', tabindex: '0', role: 'button' });
+      g.append(mk('title', {}, `${e.title} — ${formatWhen(e.start, e.precision)}`));
+
+      if (w > 6) {
+        // Imprecise or lasting — draw the span, so a year-precision date
+        // visibly covers a year instead of claiming a day.
+        g.append(mk('rect', {
+          x: x(start), y: y - 5, width: w, height: 10, rx: 2,
+          class: `tl-band k-${e.kind || 'other'}`,
+        }));
+      } else {
+        g.append(mk('circle', {
+          cx: x(start), cy: y, r: 4.5, class: `tl-dot k-${e.kind || 'other'}`,
+        }));
+      }
+
+      g.addEventListener('click', () => { railSection('events'); openEvent(e.id); });
+      g.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); railSection('events'); openEvent(e.id); }
+      });
+      svg.append(g);
+    }
+  });
+
+  host.append(svg);
+}
+
+async function openTimeline() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.view = 'timeline';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'empty']) $(id).hidden = true;
+  $('timeline-wrap').hidden = false;
+  $('tally').textContent = '';
+  await renderTimeline();
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -2922,13 +3117,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('ev-filter-who').addEventListener('change', e => {
     evFilter.who = e.target.value;
     renderEvents();
+    if (App.view === 'timeline') renderTimeline();
   });
+  $('btn-timeline').addEventListener('click', openTimeline);
+  $('tl-in').addEventListener('click', () => { App.tlZoom = Math.min(App.tlZoom * 1.6, 60); renderTimeline(); });
+  $('tl-out').addEventListener('click', () => { App.tlZoom = Math.max(App.tlZoom / 1.6, 1); renderTimeline(); });
+  $('tl-fit').addEventListener('click', () => { App.tlZoom = 1; renderTimeline(); });
   for (const b of document.querySelectorAll('.ev-filter-where button')) {
     b.addEventListener('click', () => {
       evFilter.where = b.dataset.where;
       for (const o of document.querySelectorAll('.ev-filter-where button'))
         o.setAttribute('aria-pressed', String(o === b));
       renderEvents();
+      if (App.view === 'timeline') renderTimeline();
     });
   }
 
