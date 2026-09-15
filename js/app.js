@@ -1051,10 +1051,15 @@ function ensureEditor() {
   });
   const cm = App.editor.codemirror;
 
+  let _overlayTimer = null;
   cm.on('change', () => {
     scheduleSave();
     updateTally();
     updateAutocomplete();
+    // Re-tokenising on every keystroke is wasted work; a short settle is
+    // enough for a link to colour itself as soon as you close it.
+    clearTimeout(_overlayTimer);
+    _overlayTimer = setTimeout(refreshWikilinkOverlay, 300);
   });
 
   // Keydown is captured before CodeMirror handles it, so arrow keys and
@@ -1074,6 +1079,19 @@ function ensureEditor() {
     if (!target) return;
     e.preventDefault();
     followLink(target);
+  });
+
+  // Select a name and press [ to wrap it: "Angel" → "[[Angel]]".
+  // Typing [[ in front of existing text inserts a link BESIDE it, which
+  // is correct but rarely what you meant — this is the gesture for
+  // linking words already on the page.
+  cm.on('beforeChange', (_cm, change) => {
+    if (change.origin !== '+input' || change.text.join('') !== '[') return;
+    if (!_cm.somethingSelected()) return;
+    const sel = _cm.getSelection();
+    if (!sel.trim() || sel.includes('\n')) return;
+    change.update(change.from, change.to, [`[[${sel}]]`]);
+    setTimeout(() => refreshWikilinkOverlay(), 0);
   });
 
   cm.on('blur', () => setTimeout(closeAutocomplete, 120));
@@ -2302,7 +2320,10 @@ function wikilinkOverlay(index) {
           const target = inner.split('|')[0].trim().toLowerCase();
           return index.has(target) ? 'wikilink' : 'wikilink-unknown';
         }
-        stream.skipToEnd();
+        // No closing ]] yet — you're mid-typing. Mark the two brackets
+        // and stop. skipToEnd() here painted the whole rest of the
+        // paragraph, because a paragraph is ONE logical line to
+        // CodeMirror: every wrapped row lit up until the link closed.
         return 'wikilink-open';
       }
       // Advance to the next candidate rather than one char at a time.
