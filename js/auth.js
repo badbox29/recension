@@ -1674,7 +1674,15 @@ const Auth = (() => {
     // Wizard entry points
     showAccountSetup,       // S1 welcome screen
     showSetupFresh,         // S2B start fresh (also guest → account conversion)
-    showSetupLoadToken,     // S3B enter existing token (call from Settings)
+    // The client id is fetched from the worker at boot. A device that had
+    // no worker address then has no id, and Google auth stays unavailable
+    // until a reload — so the host can hand one over later instead.
+    setGoogleClientId(id) {
+      if (typeof id === 'string' && id) C.googleClientId = id;
+    },
+
+    showSetupLoadChoice,    // S2A choose token or Google (call from Settings)
+    showSetupLoadToken,     // S3B enter existing token directly
     showGoogleUpgradeFlow,  // token → Google upgrade (call from Settings)
     showGoogleReauth,       // re-auth after session expiry (called automatically by bootCheck)
     recoverGoogleSession,   // mid-session 401/403 recovery: silent refresh, modal fallback

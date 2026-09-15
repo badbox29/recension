@@ -1183,6 +1183,22 @@ function openSettings() {
   openModal('modal-settings');
 }
 
+// The Google client id lives on the worker and is fetched at boot. A
+// browser that had no worker address at boot therefore has no id, and
+// Google sign-in stays unavailable until a reload. Re-fetch when an
+// address is saved so the option appears straight away.
+async function refreshGoogleClientId() {
+  if (!App.data.workerUrl) return;
+  try {
+    const res = await fetch(`${App.data.workerUrl}/auth/config`);
+    if (!res.ok) return;
+    const { googleClientId } = await res.json();
+    if (googleClientId && typeof Auth.setGoogleClientId === 'function') {
+      Auth.setGoogleClientId(googleClientId);
+    }
+  } catch { /* offline — the boot fetch will pick it up next time */ }
+}
+
 /**
  * saveWorkerUrl() — store the address and immediately say whether it works.
  *
@@ -1218,6 +1234,7 @@ async function saveWorkerUrl() {
     if (body?.ok) {
       note.textContent = 'Connected. Set up an account below to start syncing.';
       showToast('Worker connected.');
+      await refreshGoogleClientId();
       if (!Auth.isGuest()) Sync.start();
     } else {
       note.textContent = `Reached that address, but it answered ${res.status}. Check the URL points at your worker.`;
@@ -2291,7 +2308,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     closeModal('modal-settings');
-    Auth.showSetupLoadToken();
+    // The CHOOSER, not the token leaf. Going straight to showSetupLoadToken
+    // skipped the screen that offers Google, so the only way to reach
+    // Google sign-in was to open the token form and press Back — which
+    // nobody would ever guess.
+    Auth.showSetupLoadChoice();
   });
   $('btn-copy-token').addEventListener('click', () => {
     navigator.clipboard.writeText(App.data.userToken || '')
