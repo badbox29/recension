@@ -557,6 +557,13 @@ async function renderTree() {
   // Chapters with no part. Parts are optional — see createChapter().
   for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
 
+  // "+ part" lives at the bottom of the list with the other add links.
+  // It used to be a button in the rail header, which made Contents the
+  // only tab where creating something worked differently — and crowded
+  // the header enough to clip the button on narrow rails.
+  const addPart = el('button', 'toc-add toc-add-part', '+ part');
+  addPart.addEventListener('click', newPart);
+
   // A top-level "+ chapter" only when there are no parts. With parts on the
   // page it would be ambiguous which one it adds to, and each part already
   // carries its own — that ambiguity was the duplicate button.
@@ -576,6 +583,7 @@ async function renderTree() {
     if (id) { await renderTree(); openScene(id); }
   });
   toc.append(addScene);
+  toc.append(addPart);
 
   $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
 }
@@ -1473,8 +1481,6 @@ function railSection(name) {
   $('toc').hidden         = name !== 'manuscript';
   $('card-list').hidden   = name !== 'cards';
   $('event-list').hidden  = name !== 'events';
-  $('btn-new-part').hidden  = name !== 'manuscript';
-  $('btn-new-event').hidden = name !== 'events';
   saveLocal();
   if (name === 'cards')  return renderCards();
   if (name === 'events') return renderEvents();
@@ -2108,9 +2114,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
-  $('btn-new-part').addEventListener('click', newPart);
-  $('btn-new-card')?.addEventListener('click', () => newCard());
-  $('btn-new-event').addEventListener('click', newEvent);
 
   for (const id of ['ev-title', 'ev-location', 'ev-body'])
     $(id).addEventListener('input', scheduleEventSave);
