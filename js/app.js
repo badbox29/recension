@@ -554,6 +554,8 @@ async function renderTree() {
     toc.append(addCh);
   }
 
+  toc.append(addPart);
+
   // Chapters with no part. Parts are optional — see createChapter().
   for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
 
@@ -583,7 +585,6 @@ async function renderTree() {
     if (id) { await renderTree(); openScene(id); }
   });
   toc.append(addScene);
-  toc.append(addPart);
 
   $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
 }
