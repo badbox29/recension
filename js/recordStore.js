@@ -722,20 +722,26 @@ const RecordStore = (() => {
   /**
    * importRecords(records, { mode }) — restore from a backup.
    *
-   *   'merge'   keep what's here, add what's missing, and let the newer
-   *             updatedAt win on anything present in both.
+   *   'add'     insert records this device doesn't have. NEVER overwrites
+   *             anything already here.
    *   'replace' wipe local content first, then write the backup verbatim.
    *
-   * Merge is the default because it is the only one that can't lose
-   * work. Replace exists for the case the backup IS the good copy and
-   * local is the mess — but that is a decision the user has to make,
-   * never one inferred from timestamps.
+   * There is deliberately no newest-wins middle mode. That rule is right
+   * for SYNC, where both sides are one account diverging and the loser is
+   * recoverable from the other device. An import is a single irreversible
+   * event against a file of unknown provenance: a backup from a machine
+   * you'd been writing on could carry a draft you abandoned on purpose,
+   * and "newer" would quietly reinstate it over your current text — with
+   * no way to find out afterwards what it changed.
    *
-   * Every written record is marked dirty so the restore propagates to
-   * the worker, rather than sitting on one device.
+   * If you do want newer-wins, that's a sync operation: point the other
+   * device at this account and let record-level reconciliation do it.
+   *
+   * Every written record is marked dirty so a restore propagates to the
+   * worker rather than sitting on one device.
    */
-  async function importRecords(records, { mode = 'merge' } = {}) {
-    const stats = { added: 0, updated: 0, skipped: 0, byType: {} };
+  async function importRecords(records, { mode = 'add' } = {}) {
+    const stats = { added: 0, skipped: 0, byType: {} };
     if (!records || typeof records !== 'object') return stats;
 
     if (mode === 'replace') await clear();
@@ -748,22 +754,14 @@ const RecordStore = (() => {
       for (const [id, rec] of Object.entries(incoming)) {
         if (!rec || typeof rec !== 'object') continue;
 
-        const existing = mode === 'replace' ? null : await get(type, id);
-        if (existing) {
-          // Ties go to what's already here: a backup that is merely as
-          // old as local has nothing to add, and rewriting it would
-          // churn the sync for nothing.
-          if ((rec.updatedAt || 0) <= (existing.updatedAt || 0)) { stats.skipped++; continue; }
-          stats.updated++;
-        } else {
-          stats.added++;
-        }
+        if (mode !== 'replace' && await get(type, id)) { stats.skipped++; continue; }
 
         // Written verbatim — ids, ordering and timestamps are the whole
         // point of the JSON copy. put() would stamp a new updatedAt and
         // make every restored record look freshly edited.
         const ok = await _write(type, id, { ...rec, id });
         if (ok) {
+          stats.added++;
           stats.byType[type]++;
           if (typeof Sync !== 'undefined') Sync.markDirty(type, id);
         }

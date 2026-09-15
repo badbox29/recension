@@ -2700,8 +2700,8 @@ async function runImport(file) {
     `Backup from ${info.when} — ${info.summary}` +
     (info.words ? `, ${info.words.toLocaleString()} words.` : '.'),
     [
-      { label: 'Merge — keep everything here, add what is missing',  value: 'merge' },
-      { label: 'Replace — delete everything here first',             value: 'replace' },
+      { label: 'Add what is missing — nothing here is changed', value: 'add' },
+      { label: 'Replace everything on this device',             value: 'replace' },
     ]);
   if (!mode) return;
 
@@ -2738,8 +2738,7 @@ async function runImport(file) {
 
   const parts = [];
   if (stats.added)   parts.push(`${stats.added} added`);
-  if (stats.updated) parts.push(`${stats.updated} updated`);
-  if (stats.skipped) parts.push(`${stats.skipped} already current`);
+  if (stats.skipped) parts.push(`${stats.skipped} already here, left alone`);
   showToast(parts.length ? `Imported: ${parts.join(', ')}.` : 'Nothing to import.', 6000);
 }
 
