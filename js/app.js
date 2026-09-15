@@ -2629,6 +2629,120 @@ async function renderAppearances(cardId) {
   }
 }
 
+// ══ Import ═════════════════════════════════════════════════════════
+//
+// Restores from the zip that Download backup produces. The zip's
+// recension-backup.json is the restorable copy — the .md files inside
+// it are for humans and deliberately lossy (no ids, no ordering, no
+// cards or events).
+//
+// A plain .json export is accepted too, for anyone who pulled just that
+// file out of the zip.
+
+async function readBackupFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+
+  if (file.name.toLowerCase().endsWith('.json')) {
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+
+  const entries = fflate.unzipSync(buf);
+  const key = Object.keys(entries).find(k => k.endsWith('recension-backup.json'));
+  if (!key) {
+    throw new Error('No recension-backup.json in that zip. The .md files ' +
+                    'alone cannot be restored — they carry no ids or ordering.');
+  }
+  return JSON.parse(new TextDecoder().decode(entries[key]));
+}
+
+function describeBackup(data) {
+  const r = data?.records || {};
+  const count = t => Object.keys(r[t] || {}).length;
+  const when = data?.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'unknown date';
+  const bits = [
+    [count('book'), 'book'], [count('part'), 'part'],
+    [count('chapter'), 'chapter'], [count('scene'), 'scene'],
+    [count('card'), 'card'], [count('event'), 'event'],
+  ].filter(([n]) => n)
+   .map(([n, label]) => `${n} ${label}${n === 1 ? '' : 's'}`);
+
+  const words = Object.values(r.scene || {})
+    .reduce((n, s) => n + (s.wordCount || 0), 0);
+
+  return {
+    when,
+    summary: bits.join(', ') || 'nothing',
+    words,
+    ok: bits.length > 0,
+  };
+}
+
+async function runImport(file) {
+  let data;
+  try {
+    data = await readBackupFile(file);
+  } catch (e) {
+    showToast(e.message || 'Could not read that file.', 6000);
+    return;
+  }
+
+  if (data?.format && data.format !== 'recension-backup') {
+    showToast('That file is not a Recension backup.', 5000);
+    return;
+  }
+
+  const info = describeBackup(data);
+  if (!info.ok) { showToast('That backup contains no records.', 5000); return; }
+
+  // Say plainly what each choice does to what's already here. "Import"
+  // with no explanation is how people overwrite a manuscript.
+  const mode = await askChoice(
+    `Backup from ${info.when} — ${info.summary}` +
+    (info.words ? `, ${info.words.toLocaleString()} words.` : '.'),
+    [
+      { label: 'Merge — keep everything here, add what is missing',  value: 'merge' },
+      { label: 'Replace — delete everything here first',             value: 'replace' },
+    ]);
+  if (!mode) return;
+
+  if (mode === 'replace') {
+    const sure = await askChoice(
+      'Replace deletes every book, scene, card and event on this device first. This cannot be undone.',
+      [{ label: 'Yes, replace everything', value: 'yes' }]);
+    if (!sure) return;
+  }
+
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  showToast('Importing…');
+  const stats = await RecordStore.importRecords(data.records, { mode });
+
+  // Author details ride along in the backup, but never clobber details
+  // already filled in on this device.
+  if (data.author && mode === 'replace') {
+    App.data.author = { ...App.data.author, ...data.author };
+    saveAccount();
+    loadAuthorFields();
+  }
+
+  invalidateCardIndex();
+  App.activeScene = App.activeCard = App.activeEvent = null;
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview']) $(id).hidden = true;
+
+  await railSection(App.section || 'manuscript');
+  renderTabs();
+  showEmpty();
+  refreshSyncState();
+
+  const parts = [];
+  if (stats.added)   parts.push(`${stats.added} added`);
+  if (stats.updated) parts.push(`${stats.updated} updated`);
+  if (stats.skipped) parts.push(`${stats.skipped} already current`);
+  showToast(parts.length ? `Imported: ${parts.join(', ')}.` : 'Nothing to import.', 6000);
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -2941,6 +3055,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('btn-export-manuscript').addEventListener('click', () => exportManuscript()
     .catch(e => { console.error(e); showToast('Compile failed - see the console.'); }));
+  $('btn-import').addEventListener('click', () => $('import-file').click());
+  $('import-file').addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';           // so the same file can be picked twice
+    if (file) await runImport(file);
+  });
+
   $('btn-export-backup').addEventListener('click', () => exportBackup()
     .catch(e => { console.error(e); showToast('Backup failed - see the console.'); }));
 
