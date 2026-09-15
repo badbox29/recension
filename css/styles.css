@@ -86,9 +86,16 @@ body {
   overflow: hidden;
 }
 
-svg { width: 1.125rem; height: 1.125rem; fill: none;
-      stroke: currentColor; stroke-width: 1.5;
-      stroke-linecap: round; stroke-linejoin: round; }
+/* Icon defaults. Scoped with :not(.tl-svg) because CSS beats an SVG's
+   width/height ATTRIBUTES — this rule silently crushed the timeline to
+   18x18 and set fill:none on every shape inside it, producing a chart
+   that was present, correctly built, and completely invisible. Any
+   future full-size SVG needs the same exemption. */
+svg:not(.tl-svg) {
+  width: 1.125rem; height: 1.125rem; fill: none;
+  stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 
 :focus-visible {
   outline: 2px solid var(--focus);
@@ -1636,7 +1643,16 @@ a.wl.unknown {
 /* Horizontal scroll lives here, not on the page: zooming in shouldn't
    make the whole app scroll sideways. */
 .timeline { overflow-x: auto; overflow-y: hidden; padding-bottom: 0.5rem; }
-.tl-svg { display: block; }
+
+/* width:auto lets the element's own width/height attributes apply, which
+   is how the chart sizes itself to its content. */
+.tl-svg {
+  display: block;
+  width: auto;
+  height: auto;
+  fill: none;
+  stroke: none;
+}
 
 .tl-grid { stroke: var(--rule-soft); stroke-width: 1; }
 .tl-rule { stroke: var(--rule-soft); stroke-width: 1; stroke-dasharray: 2 4; }
