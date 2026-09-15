@@ -484,6 +484,17 @@ const RecordStore = (() => {
     return filtered.sort((a, b) => String(a.start).localeCompare(String(b.start)));
   }
 
+  // eventsForCard(cardId) — every event this person took part in, in
+  // order. This is the query the timeline is built from, and the reason
+  // participants are stored as card ids rather than names: a rename costs
+  // nothing and the lookup never misses on a nickname.
+  async function eventsForCard(cardId) {
+    const events = Object.values(await getAll('event'));
+    return events
+      .filter(e => (e.participants || []).includes(cardId))
+      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+  }
+
   // ── Sync interface ────────────────────────────────────────────────
   // Exactly the config shape sync.js expects. Pass this into Sync.init().
 
@@ -549,7 +560,7 @@ const RecordStore = (() => {
     // Cards
     createCard, findCardByName, CARD_TYPES,
     // Events
-    createEvent, getTimeline, PRECISIONS,
+    createEvent, getTimeline, eventsForCard, PRECISIONS,
     // Helpers
     countWords, nextOrder, sortByOrder, newId, TYPES,
     // Wiring

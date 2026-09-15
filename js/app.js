@@ -50,6 +50,7 @@ const App = {
   readScope: { kind: 'all', id: null },
   section: 'manuscript',   // which rail is showing: manuscript | cards
   activeCard: null,
+  activeEvent: null,
   lastCardType: 'character',
   readReturn: null,    // where to land when coming back from an edit
 };
@@ -444,6 +445,7 @@ function startRename(labelEl, kind, id, current) {
       // Cards carry a name, everything else a title.
       if (rec) await RecordStore.put(kind, id, kind === 'card'
         ? { ...rec, name: next } : { ...rec, title: next });
+      if (App.section === 'events') await renderEvents();
       await renderTree();
       if (App.section === 'cards') await renderCards();
       renderTabs();
@@ -472,9 +474,21 @@ function confirmDelete(kind, id, title) {
     chapter: `Delete "${name}"? Its scenes stay, moved to Unplaced.`,
     scene:   `Delete "${name}"? The text in it is lost.`,
     card:    `Delete "${name}"? The manuscript is untouched.`,
+    event:   `Delete "${name}"? The manuscript is untouched.`,
   }[kind];
 
   showConfirm(message, async () => {
+    if (kind === 'event') {
+      await RecordStore.remove('event', id);
+      if (App.activeEvent?.id === id) {
+        App.activeEvent = null;
+        $('event-edit').hidden = true;
+        showEmpty();
+      }
+      await renderEvents();
+      refreshSyncState();
+      return;
+    }
     if (kind === 'card') {
       await RecordStore.remove('card', id);
       if (App.activeCard?.id === id) {
@@ -1030,8 +1044,11 @@ async function openScene(id) {
 
   App.view = 'edit';
   await flushActiveCard();
+  await flushActiveEvent();
   App.activeCard = null;
+  App.activeEvent = null;
   $('card-edit').hidden = true;
+  $('event-edit').hidden = true;
   $('readview').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
@@ -1453,12 +1470,15 @@ function railSection(name) {
   App.section = name;
   for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
     b.setAttribute('aria-selected', String(b.dataset.section === name));
-  $('toc').hidden        = name !== 'manuscript';
-  $('card-list').hidden  = name !== 'cards';
-  $('btn-new-part').hidden = name !== 'manuscript';
-  $('btn-new-card').hidden = name !== 'cards';
+  $('toc').hidden         = name !== 'manuscript';
+  $('card-list').hidden   = name !== 'cards';
+  $('event-list').hidden  = name !== 'events';
+  $('btn-new-part').hidden  = name !== 'manuscript';
+  $('btn-new-event').hidden = name !== 'events';
   saveLocal();
-  return name === 'cards' ? renderCards() : renderTree();
+  if (name === 'cards')  return renderCards();
+  if (name === 'events') return renderEvents();
+  return renderTree();
 }
 
 async function renderCards() {
@@ -1524,11 +1544,13 @@ async function openCard(id) {
 
   App.activeCard = c;
   App.activeScene = null;
+  App.activeEvent = null;
   App.view = 'edit';
 
   $('readview').hidden = true;
   $('empty').hidden = true;
   $('scene').hidden = true;
+  $('event-edit').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -1637,6 +1659,293 @@ async function flushActiveCard() {
   App.activeCard = { ...next };
   App.lastCardType = next.cardType;
   await renderCards();
+  refreshSyncState();
+}
+
+// ══ Events ═════════════════════════════════════════════════════════
+//
+// Peer records to cards, NOT properties of scenes. Born, married,
+// divorced, died — most of a life happens offscreen and will never appear
+// in the manuscript. Hanging events off scenes makes all of that
+// unrepresentable, which is the flaw in every "tag your scenes with a
+// date" implementation.
+//
+// ── DATES ──────────────────────────────────────────────────────────
+// start/end are ISO 8601 STRINGS with a precision, not Date objects:
+//
+//   1892                 year     renders as a band across the year
+//   1892-04              month
+//   1892-04-17           day
+//   1892-04-17T09:30     minute   renders as a point
+//
+// Three reasons for strings over timestamps:
+//   1. ISO sorts lexically in chronological order, so ordering needs no
+//      parsing and partial dates sort correctly against full ones.
+//   2. Precision is preserved. "Married sometime in 1892" stays vague
+//      instead of being silently promoted to 1 January.
+//   3. BCE works via the leading-minus form (-0450) without fighting
+//      JavaScript's Date, which handles year 0 and negatives badly.
+//
+// Precision is DERIVED from what you typed rather than asked for
+// separately — a dropdown next to a date field is a question the text
+// already answered.
+
+const EVENT_KIND_MARK = {
+  birth: '\u2217', death: '\u2020', marriage: '\u221E', divorce: '\u2260',
+  meeting: '\u00B7', conflict: '\u2694', journey: '\u2192',
+  discovery: '\u25C7', other: '\u00B7',
+};
+
+const ISO_SHAPES = [
+  [/^-?\d{4}$/,                              'year'],
+  [/^-?\d{4}-\d{2}$/,                        'month'],
+  [/^-?\d{4}-\d{2}-\d{2}$/,                  'day'],
+  [/^-?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}$/,   'minute'],
+];
+
+// parseWhen(text) → { iso, precision } | null
+// Accepts the ISO shapes above plus a few things people actually type.
+function parseWhen(text) {
+  const t = (text || '').trim().replace(' ', 'T');
+  if (!t) return null;
+  for (const [re, precision] of ISO_SHAPES) {
+    if (re.test(t)) return { iso: t, precision };
+  }
+  // "17 April 1892" / "April 1892" / "4/17/1892" — convenience only.
+  const d = new Date(t);
+  if (!isNaN(d)) {
+    const y = String(d.getFullYear()).padStart(4, '0');
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return { iso: `${y}-${m}-${day}`, precision: 'day' };
+  }
+  return null;
+}
+
+// formatWhen(iso, precision) — display at the precision given, never more.
+// Showing "1 January 1892" for a date recorded as "1892" invents detail
+// the author did not supply.
+function formatWhen(iso, precision) {
+  if (!iso) return 'undated';
+  const neg = iso.startsWith('-');
+  const [datePart, timePart] = iso.replace(/^-/, '').split('T');
+  const [y, m, d] = datePart.split('-');
+  const era = neg ? ' BCE' : '';
+  const MONTHS = ['January','February','March','April','May','June','July',
+                  'August','September','October','November','December'];
+  const month = MONTHS[Number(m) - 1] || '';
+
+  if (precision === 'year'  || !m) return `${Number(y)}${era}`;
+  if (precision === 'month' || !d) return `${month} ${Number(y)}${era}`;
+  if (precision === 'minute' && timePart) return `${Number(d)} ${month} ${Number(y)}${era}, ${timePart}`;
+  return `${Number(d)} ${month} ${Number(y)}${era}`;
+}
+
+// ── Rail ───────────────────────────────────────────────────────────
+
+async function renderEvents() {
+  const list = $('event-list');
+  list.replaceChildren();
+
+  const events = Object.values(await RecordStore.getAll('event'));
+  if (!events.length) {
+    list.append(el('p', 'rail-hint',
+      'No events yet. Births, deaths, marriages, first meetings \u2014 ' +
+      'including the ones that never appear on the page.'));
+    const add = el('button', 'toc-add', '+ event');
+    add.addEventListener('click', () => newEvent());
+    list.append(add);
+    return;
+  }
+
+  // Undated events go last rather than being hidden: an event you haven't
+  // dated yet is still an event, and burying it guarantees it stays undated.
+  const dated   = events.filter(e => e.start).sort((x, y) => String(x.start).localeCompare(String(y.start)));
+  const undated = events.filter(e => !e.start);
+
+  let lastYear = null;
+  for (const e of dated) {
+    const year = String(e.start).replace(/^-/, '').slice(0, 4);
+    if (year !== lastYear) {
+      lastYear = year;
+      list.append(el('div', 'toc-group-label ev-year',
+        String(e.start).startsWith('-') ? `${Number(year)} BCE` : String(Number(year))));
+    }
+    list.append(eventRow(e));
+  }
+
+  if (undated.length) {
+    list.append(el('div', 'toc-group-label', 'Undated'));
+    for (const e of undated) list.append(eventRow(e));
+  }
+
+  const add = el('button', 'toc-add', '+ event');
+  add.addEventListener('click', () => newEvent());
+  list.append(add);
+}
+
+function eventRow(e) {
+  const row = tocLine('button', {
+    className: 'toc-scene ev-row',
+    kind: 'event', id: e.id,
+    title: e.title,
+    figure: e.start ? formatWhen(e.start, e.precision).replace(/^\d+ /, '') : null,
+    current: App.activeEvent?.id === e.id,
+    onOpen: () => { openEvent(e.id); if (App.readOnly) closeRail(); },
+  });
+  const mark = el('span', 'ev-mark', EVENT_KIND_MARK[e.kind] || '\u00B7');
+  mark.title = e.kind || 'other';
+  row.prepend(mark);
+  return row;
+}
+
+async function newEvent() {
+  const title = await askName('New event', 'What happened');
+  if (!title) return;
+  const id = await RecordStore.createEvent({ title });
+  if (!id) return;
+  await renderEvents();
+  openEvent(id);
+}
+
+// ── Editor ─────────────────────────────────────────────────────────
+
+async function openEvent(id) {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  const e = await RecordStore.get('event', id);
+  if (!e) { showToast('That event is gone.'); return renderEvents(); }
+
+  App.activeEvent = e;
+  App.activeScene = null;
+  App.activeCard = null;
+  App.view = 'edit';
+
+  for (const h of ['readview', 'empty', 'scene', 'card-edit']) $(h).hidden = true;
+  $('event-edit').hidden = false;
+  $('btn-read').setAttribute('aria-pressed', 'false');
+
+  $('ev-title').value    = e.title || '';
+  $('ev-kind').value     = e.kind || 'other';
+  $('ev-start').value    = e.start || '';
+  $('ev-end').value      = e.end || '';
+  $('ev-location').value = e.location || '';
+  $('ev-body').value     = e.body || '';
+  autoGrow($('ev-body'));
+
+  await fillSceneOptions(e.sceneRef);
+  await renderParticipants(e.participants || []);
+  updateWhenHint();
+
+  $('tally').textContent = '';
+  renderEvents();
+  $('sheet').scrollTop = 0;
+}
+
+// Live feedback on what the app understood, so a mistyped date is visible
+// immediately rather than silently sorting to the wrong place.
+function updateWhenHint() {
+  const parsed = parseWhen($('ev-start').value);
+  const hint = $('ev-when-hint');
+  if (!$('ev-start').value.trim()) {
+    hint.textContent = 'Year, month, or full date — 1892, 1892-04, 1892-04-17.';
+    hint.classList.remove('bad');
+  } else if (!parsed) {
+    hint.textContent = 'Not a date I can read. Try 1892, 1892-04, or 1892-04-17.';
+    hint.classList.add('bad');
+  } else {
+    hint.textContent = `Reads as ${formatWhen(parsed.iso, parsed.precision)}.`;
+    hint.classList.remove('bad');
+  }
+}
+
+async function fillSceneOptions(selected) {
+  const sel = $('ev-scene');
+  sel.replaceChildren();
+  sel.append(new Option('Offscreen', ''));
+  const tree = App.tree || await RecordStore.getTree();
+  const push = (sc, chapter) =>
+    sel.append(new Option(chapter ? `${chapter} — ${sc.title}` : sc.title, sc.id));
+  for (const b of tree.books) for (const c of b.chapters) c.scenes.forEach(s => push(s, c.title));
+  for (const c of tree.looseChapters) c.scenes.forEach(s => push(s, c.title));
+  tree.unfiled.forEach(s => push(s, null));
+  sel.value = selected || '';
+}
+
+// Participants are card ids, not names. A rename then costs nothing, and
+// "which events involve this person" becomes a lookup instead of a search.
+async function renderParticipants(ids) {
+  const wrap = $('ev-participants');
+  wrap.replaceChildren();
+  const cards = await RecordStore.getAll('card');
+
+  for (const id of ids) {
+    const c = cards[id];
+    const chip = el('span', 'ev-chip', c ? c.name : 'unknown');
+    if (!c) chip.classList.add('missing');
+    const x = el('button', 'ev-chip-x', '\u00D7');
+    x.type = 'button';
+    x.setAttribute('aria-label', `Remove ${c ? c.name : 'participant'}`);
+    x.addEventListener('click', () => { chip.remove(); flushActiveEvent(); });
+    chip.dataset.id = id;
+    chip.append(x);
+    wrap.append(chip);
+  }
+
+  const sel = $('ev-add-participant');
+  sel.replaceChildren();
+  sel.append(new Option('+ add someone', ''));
+  const available = Object.values(cards)
+    .filter(c => !ids.includes(c.id))
+    .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
+  for (const c of available) sel.append(new Option(c.name, c.id));
+  sel.disabled = !available.length;
+}
+
+function readParticipants() {
+  return [...document.querySelectorAll('#ev-participants .ev-chip')].map(c => c.dataset.id);
+}
+
+let _evSaveTimer = null;
+function scheduleEventSave() {
+  setSyncState('dirty');
+  clearTimeout(_evSaveTimer);
+  _evSaveTimer = setTimeout(() => flushActiveEvent(), SAVE_DEBOUNCE);
+}
+
+async function flushActiveEvent() {
+  clearTimeout(_evSaveTimer);
+  const e = App.activeEvent;
+  if (!e || $('event-edit').hidden) return;
+
+  const startRaw = $('ev-start').value.trim();
+  const endRaw   = $('ev-end').value.trim();
+  const start = parseWhen(startRaw);
+  const end   = parseWhen(endRaw);
+
+  const next = {
+    ...e,
+    title: $('ev-title').value.trim() || 'Untitled event',
+    kind:  $('ev-kind').value,
+    // Keep the raw text when it doesn't parse. Discarding what someone
+    // typed because the app couldn't read it is how you lose a date
+    // nobody notices is gone.
+    start: start ? start.iso : startRaw,
+    end:   end ? end.iso : (endRaw || null),
+    precision: start ? start.precision : (e.precision || 'day'),
+    participants: readParticipants(),
+    location: $('ev-location').value.trim(),
+    sceneRef: $('ev-scene').value || null,
+    body: $('ev-body').value,
+  };
+
+  if (JSON.stringify(next) === JSON.stringify(e)) { refreshSyncState(); return; }
+
+  await RecordStore.put('event', e.id, next);
+  App.activeEvent = { ...next };
+  await renderEvents();
   refreshSyncState();
 }
 
@@ -1800,7 +2109,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
   $('btn-new-part').addEventListener('click', newPart);
-  $('btn-new-card').addEventListener('click', newCard);
+  $('btn-new-card')?.addEventListener('click', () => newCard());
+  $('btn-new-event').addEventListener('click', newEvent);
+
+  for (const id of ['ev-title', 'ev-location', 'ev-body'])
+    $(id).addEventListener('input', scheduleEventSave);
+  $('ev-body').addEventListener('input', () => autoGrow($('ev-body')));
+  for (const id of ['ev-kind', 'ev-scene'])
+    $(id).addEventListener('change', () => flushActiveEvent());
+  for (const id of ['ev-start', 'ev-end']) {
+    $(id).addEventListener('input', updateWhenHint);
+    $(id).addEventListener('change', () => flushActiveEvent());
+  }
+  $('ev-add-participant').addEventListener('change', async e => {
+    const id = e.target.value;
+    if (!id) return;
+    await renderParticipants([...readParticipants(), id]);
+    flushActiveEvent();
+  });
   for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
     b.addEventListener('click', () => railSection(b.dataset.section));
 
@@ -1949,7 +2275,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   window.matchMedia(NARROW_QUERY).addEventListener('change', applyMode);
-  window.addEventListener('beforeunload', () => { flushActiveScene(); flushActiveCard(); });
+  window.addEventListener('beforeunload', () => {
+    flushActiveScene(); flushActiveCard(); flushActiveEvent();
+  });
 
   // ── Start ───────────────────────────────────────────────────────
 
