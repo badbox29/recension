@@ -1524,7 +1524,7 @@ const Auth = (() => {
       C.closeModal('modal-account-setup');
     });
 
-    document.getElementById('auth-btn-guest-switch-confirm').addEventListener('click', () => {
+    document.getElementById('auth-btn-guest-switch-confirm').addEventListener('click', async () => {
       // Derive the storage prefix from the storageKey config value.
       // e.g. storageKey 'rev_appdata' → prefix 'rev_'
       // Falls back to clearing just the known auth module keys if no
@@ -1543,6 +1543,12 @@ const Auth = (() => {
         store.remove(C.storageAuthKey);
         store.remove(C.storageDismissKey);
       }
+      // RECENSION NOTE: this module only knows about localStorage. The
+      // host keeps its content in IndexedDB, and leaving it behind would
+      // make the next account inherit the previous one's manuscript —
+      // and then sync it up as if it belonged there. Give the host a
+      // chance to clear its own stores before the reload.
+      try { await C.onSignOut?.(); } catch (e) { console.warn('[Auth] onSignOut:', e); }
       location.reload();
     });
   }

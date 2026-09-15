@@ -2035,6 +2035,62 @@ async function flushActiveEvent() {
   refreshSyncState();
 }
 
+/**
+ * applySignIn() — hand the whole UI over to a different account.
+ *
+ * Signing in is not a data refresh; it's a change of subject. Everything
+ * pointing at the previous account has to let go first, or the editor
+ * keeps showing text from an account you are no longer in and the tabs
+ * reference ids that may not exist here.
+ *
+ * eraseLocal comes from the "discard my guest notes" choice in the auth
+ * wizard. It has to clear the DIRTY SET as well as the records: the dirty
+ * set names ids belonging to the account being left, and flushing it
+ * afterwards would write one account's manuscript into another's keys.
+ */
+async function applySignIn(data, isNew, { eraseLocal } = {}) {
+  // 1. Stop editing. No flush — those writes belong to the old account.
+  clearTimeout(_saveTimer);
+  clearTimeout(_cardSaveTimer);
+  clearTimeout(_evSaveTimer);
+  App.activeScene = null;
+  App.activeCard  = null;
+  App.activeEvent = null;
+  App.readReturn  = null;
+  App._migrationPrompted = false;
+  App.view = 'edit';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview']) $(id).hidden = true;
+  if (App.editor) { App.editor.value(''); App.editor.codemirror.clearHistory(); }
+
+  // 2. Adopt the new account.
+  App.data = mergeData(data);
+  saveLocal();
+
+  if (eraseLocal) {
+    await RecordStore.clear();
+    await Sync.resetDirty();
+  }
+
+  applyTypewriterMode(App.data.typewriter);
+  loadAuthorFields();
+
+  // 3. Fetch. A brand-new account has nothing upstream; an existing one
+  //    may be arriving on a device that has never seen this manuscript.
+  if (!isNew) await Sync.freshDeviceSync();
+  if (!Auth.isGuest() && App.data.workerUrl) Sync.start();
+
+  // 4. Redraw everything, not just the tree — the rail may be showing
+  //    cards or events, and those changed too.
+  await railSection(App.section || 'manuscript');
+  renderTabs();
+
+  const active = App.data.tabState.activeId;
+  if (active && await RecordStore.get('scene', active)) await openScene(active);
+  else showEmpty();
+
+  refreshSyncState();
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -2074,17 +2130,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     getData:    () => App.data,
     setData:    (d) => { App.data = d; saveLocal(); },
     mergeData,
-    onSignedIn: async (data, isNew) => {
-      App.data = mergeData(data);
-      saveLocal();
-      // A brand-new account has nothing upstream; an existing one may be a
-      // device that has never seen this manuscript.
-      if (!isNew) await Sync.freshDeviceSync();
-      await renderTree();
-      renderTabs();
-      showToast(`Welcome to Recension`);
+    // The third argument carries { eraseLocal } from the wizard's
+    // "discard my guest notes" choice. Ignoring it meant discard kept
+    // everything — and then pushed it into the account just joined.
+    onSignedIn: async (data, isNew, opts) => {
+      await applySignIn(data, isNew, opts || {});
+      showToast(isNew ? 'Account created.' : 'Signed in.');
     },
-    onGuestReady: async () => { await renderTree(); renderTabs(); },
+    onGuestReady: async (data) => {
+      await applySignIn(data || App.data, true, {});
+    },
     onSessionExpired: () => setSyncState('error', 'Sign-in expired'),
     // Called by auth.js at account creation to prove the worker is
     // reachable AND to lay down the account record. flush() alone was not
@@ -2092,6 +2147,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // account doesn't mark anything dirty — so it reported success having
     // written nothing, and the account was then unfindable from any other
     // device. Write the account record explicitly, then flush the content.
+    // Called by auth.js just before it reloads on sign-out. auth.js only
+    // clears localStorage; the manuscript lives in IndexedDB and would
+    // otherwise follow you into the next account.
+    onSignOut: async () => {
+      await RecordStore.clear();
+      await Sync.resetDirty();
+    },
+
     pushToWorker: async () => {
       const wrote = await Sync.pushAccount();
       if (!wrote) return false;

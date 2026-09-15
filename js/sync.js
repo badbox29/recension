@@ -701,6 +701,21 @@ const Sync = (() => {
     lastSyncTime, pendingCount,
 
     /**
+     * resetDirty() — forget every pending push.
+     *
+     * Used when switching accounts with "discard local". The dirty set
+     * names records by id, and those ids belong to the account being left
+     * — flushing them afterwards would write one account's manuscript
+     * into another's key space.
+     */
+    async resetDirty() {
+      await txWrite('dirty', st => st.clear());
+      await metaSet('tombstones', {});
+      await metaSet('accountRev', 0);
+      await metaSet('lastSync', 0);
+    },
+
+    /**
      * pushAll() — mark every local record dirty and flush.
      *
      * A repair tool. The dirty set is the only thing that decides what
