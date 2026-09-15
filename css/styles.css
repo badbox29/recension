@@ -1560,3 +1560,7 @@ a.wl.unknown {
 }
 .appears-row:hover { color: var(--ink); background: var(--rule-soft); border-left-color: var(--rubric); }
 .appears-title { font-family: var(--prose); }
+
+/* An unclosed [[ — just the brackets, faint. Nothing downstream is a
+   link yet, so nothing downstream should look like one. */
+.prose .cm-wikilink-open { color: var(--ink-faint); }
