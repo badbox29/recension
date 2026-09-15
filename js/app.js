@@ -244,7 +244,18 @@ function escapeHtml(s) {
   return s.replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 }
 
-function renderMarkdown(md) {
+// Wikilinks are rendered as real links before anything else touches the
+// text, so [[Name]] never leaks through as literal brackets.
+function renderWikilinks(html, index) {
+  return html.replace(/\[\[([^\[\]|]+)(?:\|([^\[\]]+))?\]\]/g, (_m, target, label) => {
+    const t = target.trim();
+    const known = index?.has(t.toLowerCase());
+    const text = (label || t).trim();
+    return `<a class="wl${known ? '' : ' unknown'}" data-link="${escapeHtml(t)}" href="#">${escapeHtml(text)}</a>`;
+  });
+}
+
+function renderMarkdown(md, index) {
   if (!md) return '';
   const blocks = escapeHtml(md).split(/\n{2,}/);
   return blocks.map(block => {
@@ -258,7 +269,7 @@ function renderMarkdown(md) {
   }).join('');
 
   function inline(t) {
-    return t
+    return renderWikilinks(t, index)
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>')
       .replace(/(^|\W)_([^_\n]+)_/g, '$1<em>$2</em>')
@@ -827,6 +838,7 @@ async function renderReadView() {
   rv.replaceChildren();
 
   const scenes = scenesInScope(App.readScope);
+  const index  = await cardIndex();
   const words = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
 
   const head = el('header', 'rv-head');
@@ -870,7 +882,7 @@ async function renderReadView() {
     }
 
     const body = el('div', 'rv-body');
-    body.innerHTML = renderMarkdown(rec.body) ||
+    body.innerHTML = renderMarkdown(rec.body, index) ||
       '<p class="rv-blank">This scene is empty.</p>';
     sec.append(body);
     rv.append(sec);
@@ -1037,13 +1049,37 @@ function ensureEditor() {
     // rewrites what you typed is an editor you have to fight.
     autoDownloadFontAwesome: false,
   });
-  App.editor.codemirror.on('change', () => {
+  const cm = App.editor.codemirror;
+
+  cm.on('change', () => {
     scheduleSave();
     updateTally();
+    updateAutocomplete();
   });
+
+  // Keydown is captured before CodeMirror handles it, so arrow keys and
+  // Enter drive the suggestion list instead of moving the caret while
+  // the popup is open.
+  cm.on('keydown', (_cm, e) => {
+    if (autocompleteKey(_cm, e)) { e.preventDefault(); e.stopPropagation(); }
+  });
+
+  // Ctrl/Cmd-click follows a link. A plain click must stay plain — it's
+  // how you place the caret, and stealing it would make prose containing
+  // links harder to edit than prose without them.
+  cm.getWrapperElement().addEventListener('mousedown', e => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const pos = cm.coordsChar({ left: e.clientX, top: e.clientY });
+    const target = linkAt(cm, pos);
+    if (!target) return;
+    e.preventDefault();
+    followLink(target);
+  });
+
+  cm.on('blur', () => setTimeout(closeAutocomplete, 120));
   // cursorActivity covers typing, arrow keys, and clicks alike — all the
   // ways the caret can end up on a different line.
-  App.editor.codemirror.on('cursorActivity', () => {
+  cm.on('cursorActivity', () => {
     if (App.data.typewriter) typewriterScroll();
   });
   return App.editor;
@@ -1186,7 +1222,7 @@ async function openScene(id) {
   if (App.readOnly) {
     $('prose').hidden = true;
     $('reading').hidden = false;
-    $('reading').innerHTML = renderMarkdown(sc.body) ||
+    $('reading').innerHTML = renderMarkdown(sc.body, await cardIndex()) ||
       '<p style="color:var(--ink-faint)">This scene is empty.</p>';
   } else {
     $('prose').hidden = false;
@@ -1202,6 +1238,7 @@ async function openScene(id) {
     }
     cm.refresh();
     cm.clearHistory();   // undo must not cross scene boundaries
+    refreshWikilinkOverlay();
     // Opening an existing scene with text in it: put the caret at the end
     // and pull it up to the hold line, so you resume writing from there
     // rather than from the top of the page.
@@ -1734,6 +1771,7 @@ async function openCard(id) {
   $('card-aka').value  = (c.aka || []).join(', ');
   $('card-body').value = c.body || '';
   autoGrow($('card-body'));
+  renderAppearances(c.id);
   renderCardFields(c.fields || {});
 
   $('tally').textContent = '';
@@ -1830,6 +1868,7 @@ async function flushActiveCard() {
   if (same) { refreshSyncState(); return; }
 
   await RecordStore.put('card', c.id, next);
+  invalidateCardIndex();          // name or aka may have changed
   App.activeCard = { ...next };
   App.lastCardType = next.cardType;
   await renderCards();
@@ -2227,6 +2266,226 @@ async function applySignIn(data, isNew, { eraseLocal } = {}) {
   refreshSyncState();
 }
 
+// ══ Wikilinks in the editor ════════════════════════════════════════
+//
+// Three pieces, deliberately small:
+//   1. An overlay mode that colours [[...]] without touching EasyMDE's
+//      own markdown mode.
+//   2. An autocomplete popup driven by keydown, offering cards as you
+//      type after [[.
+//   3. Ctrl/Cmd-click to open the card a link points at.
+//
+// This is the fiddliest surface in the app because it sits inside the
+// thing you actually write in. It is kept minimal on purpose: no
+// inline previews, no auto-replacement, nothing that rewrites what you
+// typed while you are typing it.
+
+let _cardIndexCache = null;
+function invalidateCardIndex() { _cardIndexCache = null; }
+async function cardIndex() {
+  if (!_cardIndexCache) _cardIndexCache = await RecordStore.buildCardIndex();
+  return _cardIndexCache;
+}
+
+// A CodeMirror overlay: runs alongside the markdown mode rather than
+// replacing it, so bold and headings still highlight normally.
+// Unresolved links get a different class — a link to a card that doesn't
+// exist should look wrong on the page, not silently like any other.
+function wikilinkOverlay(index) {
+  return {
+    token(stream) {
+      if (stream.match(/\[\[/)) {
+        const start = stream.pos;
+        if (stream.skipTo(']]')) {
+          const inner = stream.string.slice(start, stream.pos);
+          stream.match(/\]\]/);
+          const target = inner.split('|')[0].trim().toLowerCase();
+          return index.has(target) ? 'wikilink' : 'wikilink-unknown';
+        }
+        stream.skipToEnd();
+        return 'wikilink-open';
+      }
+      // Advance to the next candidate rather than one char at a time.
+      while (stream.next() != null && !stream.match(/\[\[/, false)) {}
+      return null;
+    },
+  };
+}
+
+async function refreshWikilinkOverlay() {
+  const cm = App.editor?.codemirror;
+  if (!cm) return;
+  const index = await cardIndex();
+  if (cm._wlOverlay) cm.removeOverlay(cm._wlOverlay);
+  cm._wlOverlay = wikilinkOverlay(index);
+  cm.addOverlay(cm._wlOverlay);
+}
+
+// ── Autocomplete ───────────────────────────────────────────────────
+
+let _acBox = null, _acItems = [], _acIndex = 0, _acFrom = null;
+
+function closeAutocomplete() {
+  _acBox?.remove();
+  _acBox = null;
+  _acItems = [];
+  _acFrom = null;
+}
+
+// Look back from the caret for an unclosed [[ on this line. Returns the
+// partial text typed after it, or null.
+function wikilinkContext(cm) {
+  const cur = cm.getCursor();
+  const line = cm.getLine(cur.line).slice(0, cur.ch);
+  const open = line.lastIndexOf('[[');
+  if (open === -1) return null;
+  if (line.slice(open).includes(']]')) return null;
+  return { from: { line: cur.line, ch: open + 2 }, query: line.slice(open + 2) };
+}
+
+async function updateAutocomplete() {
+  const cm = App.editor?.codemirror;
+  if (!cm) return closeAutocomplete();
+
+  const ctx = wikilinkContext(cm);
+  if (!ctx) return closeAutocomplete();
+
+  const q = ctx.query.trim().toLowerCase();
+  const cards = Object.values(await RecordStore.getAll('card'));
+
+  // Name matches before alias matches, prefix before substring — the
+  // thing you most likely meant should not be third in the list.
+  const scored = [];
+  for (const c of cards) {
+    const name = (c.name || '').toLowerCase();
+    const aliases = (c.aka || []).map(x => (x || '').toLowerCase());
+    let rank = null, via = null;
+    if (!q) rank = 3;
+    else if (name.startsWith(q)) rank = 0;
+    else if (aliases.some(x => x.startsWith(q))) { rank = 1; via = (c.aka || [])[aliases.findIndex(x => x.startsWith(q))]; }
+    else if (name.includes(q)) rank = 2;
+    else if (aliases.some(x => x.includes(q))) { rank = 3; via = (c.aka || [])[aliases.findIndex(x => x.includes(q))]; }
+    if (rank !== null) scored.push({ card: c, rank, via });
+  }
+  scored.sort((x, y) => x.rank - y.rank || (x.card.name || '').localeCompare(y.card.name || ''));
+
+  _acItems = scored.slice(0, 8);
+  _acFrom = ctx.from;
+  _acIndex = 0;
+  if (!_acItems.length) return closeAutocomplete();
+  drawAutocomplete(cm);
+}
+
+function drawAutocomplete(cm) {
+  if (!_acBox) {
+    _acBox = el('div', 'wl-complete');
+    document.body.append(_acBox);
+  }
+  _acBox.replaceChildren();
+
+  _acItems.forEach((it, i) => {
+    const row = el('div', 'wl-item' + (i === _acIndex ? ' on' : ''));
+    row.append(el('span', 'wl-name', it.card.name));
+    // Show WHICH alias matched, so picking the right one of two similar
+    // characters doesn't require opening both.
+    if (it.via) row.append(el('span', 'wl-via', it.via));
+    row.append(el('span', 'wl-kind', it.card.cardType));
+    row.addEventListener('mousedown', e => { e.preventDefault(); acceptAutocomplete(cm, i); });
+    _acBox.append(row);
+  });
+
+  const co = cm.cursorCoords(true, 'window');
+  _acBox.style.top = `${co.bottom + 4}px`;
+  _acBox.style.left = `${Math.min(co.left, window.innerWidth - 260)}px`;
+}
+
+function acceptAutocomplete(cm, i = _acIndex) {
+  const item = _acItems[i];
+  if (!item || !_acFrom) return closeAutocomplete();
+  const cur = cm.getCursor();
+  // Include a closing ]] only if one isn't already sitting there.
+  const rest = cm.getLine(cur.line).slice(cur.ch);
+  const closing = rest.startsWith(']]') ? '' : ']]';
+  cm.replaceRange(item.card.name + closing, _acFrom, cur);
+  if (!closing) cm.setCursor({ line: cur.line, ch: cur.ch - (cur.ch - _acFrom.ch) + item.card.name.length + 2 });
+  closeAutocomplete();
+  refreshWikilinkOverlay();
+}
+
+function autocompleteKey(cm, e) {
+  if (!_acBox || !_acItems.length) return false;
+  if (e.key === 'ArrowDown') { _acIndex = (_acIndex + 1) % _acItems.length; drawAutocomplete(cm); return true; }
+  if (e.key === 'ArrowUp')   { _acIndex = (_acIndex - 1 + _acItems.length) % _acItems.length; drawAutocomplete(cm); return true; }
+  if (e.key === 'Enter' || e.key === 'Tab') { acceptAutocomplete(cm); return true; }
+  if (e.key === 'Escape') { closeAutocomplete(); return true; }
+  return false;
+}
+
+// ── Following a link ───────────────────────────────────────────────
+
+// The [[target]] under a position, if any.
+function linkAt(cm, pos) {
+  const line = cm.getLine(pos.line) || '';
+  for (const m of line.matchAll(/\[\[([^\[\]|]+)(?:\|[^\[\]]+)?\]\]/g)) {
+    if (pos.ch >= m.index && pos.ch <= m.index + m[0].length) return m[1].trim();
+  }
+  return null;
+}
+
+async function followLink(target) {
+  const card = await RecordStore.resolveLink(target);
+  if (card) { railSection('cards'); return openCard(card.id); }
+
+  // An unresolved link is usually a character you meant to write up.
+  // Offer to create it rather than just reporting a dead end.
+  const make = await askChoice(`No card called "${target}".`,
+    RecordStore.CARD_TYPES.map(t => ({ label: `Create a ${CARD_TYPE_SINGULAR[t]}`, value: t })));
+  if (!make) return;
+  const id = await RecordStore.createCard(make, target);
+  if (!id) return;
+  const rec = await RecordStore.get('card', id);
+  await RecordStore.put('card', id, { ...rec, fields: startersFor(make) });
+  invalidateCardIndex();
+  await refreshWikilinkOverlay();
+  railSection('cards');
+  openCard(id);
+}
+
+/**
+ * renderAppearances(cardId) — which scenes link to this card.
+ *
+ * Derived from the prose, not maintained by hand. This is the thing
+ * neither Scrivener nor Manuskript can do: full-text search misses
+ * pronouns, nicknames, and scenes where someone is discussed but
+ * absent, while a [[link]] is an explicit statement that this scene is
+ * about this person.
+ */
+async function renderAppearances(cardId) {
+  const wrap = $('card-appears');
+  wrap.replaceChildren();
+
+  const { byCard } = await RecordStore.linkGraph();
+  const hits = byCard[cardId] || [];
+  if (!hits.length) {
+    wrap.append(el('p', 'note',
+      'Not linked from any scene yet. Write [[' +
+      (App.activeCard?.name || 'name') + ']] in a scene to connect it.'));
+    return;
+  }
+
+  const meta = Object.fromEntries(
+    RecordStore.allChapters(App.tree).flatMap(ch =>
+      ch.scenes.map(s => [s.id, `${ch.title} — ${s.title}`])));
+
+  for (const { sceneId, count } of hits) {
+    const b = el('button', 'appears-row');
+    b.append(el('span', 'appears-title', meta[sceneId] || 'Unplaced scene'));
+    if (count > 1) b.append(el('span', 'toc-figure', `\u00D7${count}`));
+    b.addEventListener('click', () => { railSection('manuscript'); openScene(sceneId); });
+    wrap.append(b);
+  }
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -2385,6 +2644,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Scroll-spy, rAF-throttled so a fast scroll through 60 scenes doesn't
   // re-render the contents tree on every frame.
+  // Rendered wikilinks in the read view and the mobile reading pane.
+  // Plain click is fine here — this text isn't editable, so there's no
+  // caret to place and nothing to steal.
+  $('sheet').addEventListener('click', e => {
+    const link = e.target.closest('a.wl');
+    if (!link) return;
+    e.preventDefault();
+    followLink(link.dataset.link);
+  });
+
   $('sheet').addEventListener('scroll', () => {
     if (App.view !== 'read' || _spyRaf) return;
     _spyRaf = requestAnimationFrame(() => { _spyRaf = null; updateSpy(); });

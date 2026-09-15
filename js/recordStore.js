@@ -571,6 +571,90 @@ const RecordStore = (() => {
       .sort((a, b) => String(a.start).localeCompare(String(b.start)));
   }
 
+  // ══ Wikilinks ════════════════════════════════════════════════════
+  //
+  // [[Card Name]] written inline in scene prose. The link is TEXT IN THE
+  // BODY, not a record: the graph is derived by scanning. That choice
+  // buys a lot — no new record type, no sync changes, and a scene stays
+  // readable as plain markdown in an export or in any other editor.
+  //
+  // What it costs: renaming a card doesn't rewrite existing links. The
+  // aka field absorbs most of that (an old name kept as an alias keeps
+  // resolving), and a "rename and update references" action can handle
+  // the rest if it ever becomes a real irritation.
+
+  const LINK_RE = /\[\[([^\[\]|]+)(?:\|([^\[\]]+))?\]\]/g;
+
+  // extractLinks(text) → ['Angel', 'Sonoran Desert']
+  // Supports [[Card Name|display text]], keeping the target only.
+  function extractLinks(text) {
+    if (!text) return [];
+    const out = [];
+    for (const m of String(text).matchAll(LINK_RE)) {
+      const target = m[1].trim();
+      if (target) out.push(target);
+    }
+    return out;
+  }
+
+  // buildCardIndex() → Map of lowercased name AND every alias → card.
+  // One pass, so resolving a whole scene's links doesn't re-scan the
+  // card set per link.
+  async function buildCardIndex() {
+    const index = new Map();
+    for (const c of Object.values(await getAll('card'))) {
+      const keys = [c.name, ...(c.aka || [])];
+      for (const k of keys) {
+        const key = (k || '').trim().toLowerCase();
+        // First card wins on a collision rather than the last, so the
+        // resolution a writer already saw stays stable.
+        if (key && !index.has(key)) index.set(key, c);
+      }
+    }
+    return index;
+  }
+
+  /**
+   * linkGraph() — who appears where, derived from the prose.
+   *
+   *   byCard   cardId  → [{ sceneId, count }]
+   *   byScene  sceneId → [{ cardId, name }]
+   *   unknown  Map of unresolved target → [sceneId]
+   *
+   * `unknown` matters: a link to a card that doesn't exist is usually a
+   * typo or a character you meant to write up. Silently dropping those
+   * would hide both.
+   */
+  async function linkGraph() {
+    const [scenes, index] = await Promise.all([getAll('scene'), buildCardIndex()]);
+    const byCard = {}, byScene = {}, unknown = new Map();
+
+    for (const sc of Object.values(scenes)) {
+      const counts = new Map();
+      for (const target of extractLinks(sc.body)) {
+        const card = index.get(target.toLowerCase());
+        if (!card) {
+          if (!unknown.has(target)) unknown.set(target, []);
+          unknown.get(target).push(sc.id);
+          continue;
+        }
+        counts.set(card.id, (counts.get(card.id) || 0) + 1);
+      }
+      if (!counts.size) continue;
+      byScene[sc.id] = [];
+      for (const [cardId, count] of counts) {
+        (byCard[cardId] ||= []).push({ sceneId: sc.id, count });
+        byScene[sc.id].push({ cardId, count });
+      }
+    }
+    return { byCard, byScene, unknown };
+  }
+
+  // resolveLink(target) — the card a [[target]] points at, or null.
+  async function resolveLink(target) {
+    return (await buildCardIndex()).get((target || '').trim().toLowerCase()) || null;
+  }
+
   // ── Sync interface ────────────────────────────────────────────────
   // Exactly the config shape sync.js expects. Pass this into Sync.init().
 
@@ -649,6 +733,7 @@ const RecordStore = (() => {
     deleteBook, deletePart, deleteChapter, deleteScene,
     // Cards
     createCard, findCardByName, CARD_TYPES,
+    extractLinks, buildCardIndex, linkGraph, resolveLink, LINK_RE,
     // Events
     createEvent, getTimeline, eventsForCard, PRECISIONS,
     // Helpers
