@@ -1580,3 +1580,7 @@ a.wl.unknown {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* A concealed link is just tinted words — no brackets, no underline.
+   It should read as prose that happens to be connected to something. */
+.prose .cm-wikilink { color: var(--rubric); }
