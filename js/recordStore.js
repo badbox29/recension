@@ -53,8 +53,16 @@
  *
  * ── RECORD SHAPES ────────────────────────────────────────────
  *
- *   book    { id, title, order, createdAt, updatedAt }
- *   chapter { id, bookId, title, synopsis, order, createdAt, updatedAt }
+ *   book    { id, title, subtitle, order, createdAt, updatedAt }
+ *           A WORK — one novel. The type name stays `book` because that is
+ *           what existing records and KV keys already say; renaming it
+ *           would mean migrating every key for a label change.
+ *   part    { id, bookId, title, order, createdAt, updatedAt }
+ *           Optional tier. Most novels have none, so a chapter may hang
+ *           directly off the work with partId null.
+ *   chapter { id, bookId, partId, title, synopsis, order, createdAt, updatedAt }
+ *           bookId is always set; partId is null for a chapter that sits
+ *           directly under the work.
  *   scene   { id, chapterId, title, body, synopsis, pov, status,
  *             wordCount, order, createdAt, updatedAt }
  *           chapterId null = unfiled ("not placed yet")
@@ -88,7 +96,7 @@ const RecordStore = (() => {
   const RECORDS    = 'records';
   const INDEX      = 'index';
 
-  const TYPES = ['book', 'chapter', 'scene', 'card', 'event'];
+  const TYPES = ['book', 'part', 'chapter', 'scene', 'card', 'event'];
 
   let _dbPromise = null;
 
@@ -195,6 +203,13 @@ const RecordStore = (() => {
       e.p = rec.chapterId || '';
       e.o = rec.order || 0;
     } else if (type === 'chapter') {
+      e.t = rec.title || '';
+      // Parent is the part when there is one, else the work. `g` records
+      // which, so the tree can be rebuilt from metadata alone.
+      e.p = rec.partId || rec.bookId || '';
+      e.g = rec.partId ? 'part' : 'book';
+      e.o = rec.order || 0;
+    } else if (type === 'part') {
       e.t = rec.title || '';
       e.p = rec.bookId || '';
       e.o = rec.order || 0;
@@ -351,14 +366,28 @@ const RecordStore = (() => {
   // top level of the contents. Parts are optional: most novels don't have
   // them, and requiring one before you can make a chapter would force the
   // writer to invent a structural level they don't want.
-  async function createChapter(bookId = null, title) {
+  async function createPart(bookId, title) {
+    const id = newId();
+    const all = await getAll('part');
+    const siblings = Object.fromEntries(
+      Object.entries(all).filter(([, p]) => p.bookId === bookId));
+    const ok = await put('part', id, {
+      id, bookId, title: title || 'Untitled part', order: nextOrder(siblings),
+    });
+    return ok ? id : null;
+  }
+
+  // createChapter(bookId, partId) — partId null puts the chapter directly
+  // under the work. Parts are optional: most novels have none, and
+  // requiring one would force the writer to invent a tier they don't want.
+  async function createChapter(bookId, title, partId = null) {
     const id = newId();
     const all = await getAll('chapter');
-    const siblings = Object.fromEntries(
-      Object.entries(all).filter(([, c]) => (c.bookId || null) === (bookId || null)));
+    const siblings = Object.fromEntries(Object.entries(all).filter(
+      ([, c]) => c.bookId === bookId && (c.partId || null) === (partId || null)));
     const ok = await put('chapter', id, {
-      id, bookId: bookId || null, title: title || 'Untitled chapter',
-      synopsis: '', order: nextOrder(siblings),
+      id, bookId, partId: partId || null,
+      title: title || 'Untitled chapter', synopsis: '', order: nextOrder(siblings),
     });
     return ok ? id : null;
   }
@@ -385,35 +414,82 @@ const RecordStore = (() => {
    * Reads ONLY the index store. No scene body is deserialized, so this stays
    * cheap at 150k words and is safe to call on every render.
    */
+  /**
+   * getTree() — the whole library, bodies excluded.
+   *
+   * Reads ONLY the index store. No scene body is deserialized, so this
+   * stays cheap at 150k words and is safe to call on every render.
+   *
+   *   works[] → parts[] → chapters[] → scenes[]
+   *           → looseChapters[]      (no part)
+   *   unfiled[]                       (scenes with no chapter)
+   */
   async function getTree() {
     const idx = await getIndex();
-    const books = [], chapters = [], scenes = [];
+    const books = [], parts = [], chapters = [], scenes = [];
+
     for (const [k, e] of Object.entries(idx)) {
       const [type, id] = splitKey(k);
-      if (type === 'book')         books.push({ id, title: e.t, order: e.o || 0, updatedAt: e.u });
-      else if (type === 'chapter') chapters.push({ id, title: e.t, bookId: e.p || null,
-                                                   order: e.o || 0, updatedAt: e.u });
-      else if (type === 'scene')   scenes.push({ id, title: e.t, chapterId: e.p || null,
-                                                 wordCount: e.w, status: e.s,
-                                                 order: e.o || 0, updatedAt: e.u });
+      const base = { id, title: e.t, order: e.o || 0, updatedAt: e.u };
+      if (type === 'book')         books.push(base);
+      else if (type === 'part')    parts.push({ ...base, bookId: e.p || null });
+      else if (type === 'chapter') chapters.push({
+        ...base,
+        partId: e.g === 'part' ? e.p : null,
+        bookId: e.g === 'part' ? null : (e.p || null),
+      });
+      else if (type === 'scene')   scenes.push({
+        ...base, chapterId: e.p || null, wordCount: e.w, status: e.s,
+      });
     }
-    return {
-      books: sortByOrder(books).map(b => ({
+
+    // A chapter under a part knows its part but not its work — the index
+    // holds one parent. Resolve the work through the part.
+    const partById = Object.fromEntries(parts.map(p => [p.id, p]));
+    for (const c of chapters) {
+      if (c.partId) c.bookId = partById[c.partId]?.bookId || null;
+    }
+
+    const withScenes = c => ({
+      ...c, scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
+    });
+    const wordsOf = list => list.reduce(
+      (n, c) => n + c.scenes.reduce((m, s) => m + (s.wordCount || 0), 0), 0);
+
+    const works = sortByOrder(books).map(b => {
+      const mine = chapters.filter(c => c.bookId === b.id);
+      const workParts = sortByOrder(parts.filter(p => p.bookId === b.id)).map(p => {
+        const inPart = sortByOrder(mine.filter(c => c.partId === p.id)).map(withScenes);
+        return { ...p, chapters: inPart, words: wordsOf(inPart) };
+      });
+      const loose = sortByOrder(mine.filter(c => !c.partId)).map(withScenes);
+      return {
         ...b,
-        chapters: sortByOrder(chapters.filter(c => c.bookId === b.id)).map(c => ({
-          ...c,
-          scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
-        })),
-      })),
-      // Chapters with no part, rendered at the top level. Same idea as
-      // unplaced scenes: structure you haven't imposed yet isn't an error.
-      looseChapters: sortByOrder(chapters.filter(c => !c.bookId)).map(c => ({
-        ...c,
-        scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
-      })),
+        parts: workParts,
+        looseChapters: loose,
+        words: workParts.reduce((n, p) => n + p.words, 0) + wordsOf(loose),
+      };
+    });
+
+    return {
+      works,
+      // Chapters whose work was deleted would otherwise vanish silently.
+      orphanChapters: sortByOrder(
+        chapters.filter(c => !c.bookId && !c.partId)).map(withScenes),
       unfiled: sortByOrder(scenes.filter(s => !s.chapterId)),
       totalWords: scenes.reduce((n, s) => n + (s.wordCount || 0), 0),
     };
+  }
+
+  // allChapters(tree) — every chapter in reading order, flattened.
+  function allChapters(tree) {
+    const out = [];
+    for (const w of tree.works) {
+      for (const p of w.parts) out.push(...p.chapters);
+      out.push(...w.looseChapters);
+    }
+    out.push(...(tree.orphanChapters || []));
+    return out;
   }
 
   // ── Cards ─────────────────────────────────────────────────────────
@@ -524,11 +600,25 @@ const RecordStore = (() => {
   // way to silently lose a draft.
 
   async function deleteBook(id) {
-    const chapters = await getAll('chapter');
-    for (const c of Object.values(chapters)) {
+    for (const p of Object.values(await getAll('part'))) {
+      if (p.bookId === id) await put('part', p.id, { ...p, bookId: null });
+    }
+    for (const c of Object.values(await getAll('chapter'))) {
       if (c.bookId === id) await put('chapter', c.id, { ...c, bookId: null });
     }
     return remove('book', id);
+  }
+
+  // Deleting a part keeps its chapters, moving them up to sit directly
+  // under the work — the same detach-not-destroy rule as everywhere else.
+  async function deletePart(id) {
+    const part = await get('part', id);
+    for (const c of Object.values(await getAll('chapter'))) {
+      if (c.partId === id) {
+        await put('chapter', c.id, { ...c, partId: null, bookId: part?.bookId || c.bookId });
+      }
+    }
+    return remove('part', id);
   }
 
   async function deleteChapter(id) {
@@ -555,8 +645,8 @@ const RecordStore = (() => {
     // Core
     get, getAll, getIndex, put, putLocal, remove, removeLocal,
     // Tree
-    createBook, createChapter, createScene, getTree,
-    deleteBook, deleteChapter, deleteScene,
+    createBook, createPart, createChapter, createScene, getTree, allChapters,
+    deleteBook, deletePart, deleteChapter, deleteScene,
     // Cards
     createCard, findCardByName, CARD_TYPES,
     // Events

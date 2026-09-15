@@ -328,7 +328,7 @@ let _menu = null;
 function closeRowMenu() { _menu?.remove(); _menu = null; }
 document.addEventListener('click', closeRowMenu);
 
-const KIND_LABEL = { book: 'part', chapter: 'chapter', scene: 'scene' };
+const KIND_LABEL = { book: 'book', part: 'part', chapter: 'chapter', scene: 'scene' };
 
 function openRowMenu(anchor, kind, id, title) {
   closeRowMenu();
@@ -418,6 +418,51 @@ function askName(heading, placeholder, initial = '') {
   });
 }
 
+// askChoice(heading, options) — pick one of several. Same shape as
+// askName; used when an action is ambiguous across multiple books.
+function askChoice(heading, options) {
+  return new Promise(resolve => {
+    const overlay = el('div', 'modal-overlay');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+
+    const modal = el('div', 'modal modal-sm');
+    const head  = el('div', 'modal-header');
+    head.append(el('h2', 'modal-title', heading));
+    const body  = el('div', 'modal-body');
+    const list  = el('div', 'choice-list');
+
+    let settled = false;
+    const done = v => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(v);
+    };
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); done(null); } }
+    document.addEventListener('keydown', onKey, true);
+
+    for (const o of options) {
+      const b = el('button', 'choice', o.label);
+      b.addEventListener('click', () => done(o.value));
+      list.append(b);
+    }
+
+    const actions = el('div', 'modal-actions');
+    const cancel = el('button', 'ghost-btn', 'Cancel');
+    cancel.addEventListener('click', () => done(null));
+    actions.append(cancel);
+
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) done(null); });
+    body.append(list, actions);
+    modal.append(head, body);
+    overlay.append(modal);
+    document.body.append(overlay);
+    list.firstChild?.focus();
+  });
+}
+
 // ── Inline rename ──────────────────────────────────────────────────
 // Swaps the title span for an input in place. A prompt() dialog would be
 // fewer lines but throws you out of the page you're reading.
@@ -470,7 +515,8 @@ function startRename(labelEl, kind, id, current) {
 function confirmDelete(kind, id, title) {
   const name = title || `this ${KIND_LABEL[kind]}`;
   const message = {
-    book:    `Delete "${name}"? Its chapters stay, moved to the top level.`,
+    book:    `Delete "${name}"? Its parts and chapters stay, detached.`,
+    part:    `Delete "${name}"? Its chapters stay, moved up under the book.`,
     chapter: `Delete "${name}"? Its scenes stay, moved to Unplaced.`,
     scene:   `Delete "${name}"? The text in it is lost.`,
     card:    `Delete "${name}"? The manuscript is untouched.`,
@@ -501,6 +547,7 @@ function confirmDelete(kind, id, title) {
       return;
     }
     if (kind === 'book')    await RecordStore.deleteBook(id);
+    if (kind === 'part')    await RecordStore.deletePart(id);
     if (kind === 'chapter') await RecordStore.deleteChapter(id);
     if (kind === 'scene') {
       await RecordStore.deleteScene(id);
@@ -525,64 +572,72 @@ async function renderTree() {
   const toc = $('toc');
   toc.replaceChildren();
 
-  for (const book of App.tree.books) {
-    const collapsed = isCollapsed(book.id);
-    const bookWords = book.chapters.reduce(
-      (n, c) => n + c.scenes.reduce((m, s) => m + (s.wordCount || 0), 0), 0);
-
-    const partRow = tocLine('div', {
-      className: 'toc-part',
-      kind: 'book', id: book.id,
-      title: book.title,
-      figure: fmtWords(bookWords),
-      onOpen: () => openRead({ kind: 'book', id: book.id }),
+  for (const work of App.tree.works) {
+    const collapsed = isCollapsed(work.id);
+    const row = tocLine('div', {
+      className: 'toc-work',
+      kind: 'book', id: work.id,
+      title: work.title,
+      figure: fmtWords(work.words),
+      onOpen: () => openRead({ kind: 'book', id: work.id }),
     });
-    partRow.prepend(caretFor(book.id, collapsed, renderTree));
-    toc.append(partRow);
+    row.prepend(caretFor(work.id, collapsed, renderTree));
+    toc.append(row);
     if (collapsed) continue;
 
-    for (const ch of book.chapters) toc.append(...chapterRows(ch, 'toc-chapter'));
+    for (const part of work.parts) {
+      const pCollapsed = isCollapsed(part.id);
+      const pRow = tocLine('div', {
+        className: 'toc-part',
+        kind: 'part', id: part.id,
+        title: part.title,
+        figure: fmtWords(part.words),
+        onOpen: () => openRead({ kind: 'part', id: part.id }),
+      });
+      pRow.prepend(caretFor(part.id, pCollapsed, renderTree));
+      toc.append(pRow);
+      if (pCollapsed) continue;
 
-    const addCh = el('button', 'toc-add toc-add-chapter', '+ chapter');
-    addCh.addEventListener('click', () => newChapter(book.id));
-    toc.append(addCh);
+      for (const ch of part.chapters) toc.append(...chapterRows(ch, 'toc-chapter in-part'));
+      toc.append(addLink('+ chapter', 'toc-add-chapter in-part',
+        () => newChapter(work.id, part.id)));
+    }
+
+    // Chapters sitting directly under the work. Parts are optional, and a
+    // book with none — which is most books — looks exactly like this.
+    for (const ch of work.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter'));
+
+    toc.append(addLink('+ chapter', 'toc-add-chapter', () => newChapter(work.id, null)));
+    toc.append(addLink('+ part', 'toc-add-part-inner', () => newPart(work.id)));
   }
 
-  // Chapters with no part. Parts are optional — see createChapter().
-  for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
-
-  // A top-level "+ chapter" only when there are no parts. With parts on the
-  // page it would be ambiguous which one it adds to, and each part already
-  // carries its own.
-  if (!App.tree.books.length) {
-    const addLoose = el('button', 'toc-add toc-add-chapter', '+ chapter');
-    addLoose.addEventListener('click', () => newChapter(null));
-    toc.append(addLoose);
+  if (App.tree.orphanChapters?.length) {
+    toc.append(el('div', 'toc-group-label', 'Detached'));
+    for (const ch of App.tree.orphanChapters) toc.append(...chapterRows(ch, 'toc-chapter'));
   }
 
-  // "+ part" sits with the parts it creates, above Unplaced. Unplaced is a
-  // trailing catch-all, so anything appended after it reads as belonging
-  // to it.
-  const addPart = el('button', 'toc-add toc-add-part', '+ part');
-  addPart.addEventListener('click', newPart);
-  toc.append(addPart);
+  // "+ book" is the only top-level creation now that works are the top
+  // tier. It sits above Unplaced, which is a trailing catch-all.
+  toc.append(addLink('+ book', 'toc-add-part', newWork));
 
-  // Unplaced scenes and their add action stay together, so "+ scene" here
-  // reads as "add to Unplaced" rather than as a second global button.
   toc.append(el('div', 'toc-group-label', 'Unplaced'));
   for (const sc of App.tree.unfiled) toc.append(sceneRow(sc));
-  const addScene = el('button', 'toc-add', '+ scene');
-  addScene.addEventListener('click', async () => {
+  toc.append(addLink('+ scene', '', async () => {
     const id = await RecordStore.createScene(null);
     if (id) { await renderTree(); openScene(id); }
-  });
-  toc.append(addScene);
+  }));
 
   $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
 }
 
-// A collapse caret. Shared by parts, chapters and card groups so the
-// gesture means the same thing everywhere in the rail.
+function addLink(label, className, onClick) {
+  const b = el('button', `toc-add ${className}`.trim(), label);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// A collapse caret. Shared by works, parts, chapters and card groups so
+// the gesture means the same thing everywhere in the rail.
 function caretFor(id, collapsed, rerender) {
   const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
   caret.addEventListener('click', e => {
@@ -593,50 +648,9 @@ function caretFor(id, collapsed, rerender) {
   return caret;
 }
 
-function chapterRows(ch, className) {
-  const rows = [];
-  const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
-  const collapsed = isCollapsed(ch.id);
-
-  const row = tocLine('div', {
-    className,
-    kind: 'chapter', id: ch.id,
-    title: ch.title,
-    figure: fmtWords(chWords),
-    onOpen: () => openRead({ kind: 'chapter', id: ch.id }),
-  });
-  row.prepend(caretFor(ch.id, collapsed, renderTree));
-  rows.push(row);
-  if (collapsed) return rows;
-
-  for (const sc of ch.scenes) rows.push(sceneRow(sc));
-
-  const add = el('button', 'toc-add', '+ scene');
-  add.addEventListener('click', async () => {
-    const id = await RecordStore.createScene(ch.id);
-    if (id) { await renderTree(); openScene(id); }
-  });
-  rows.push(add);
-  return rows;
-}
-
-async function newPart() {
-  const name = await askName('New part', 'Part One');
-  if (!name) return;
-  await RecordStore.createBook(name);
-  renderTree();
-}
-
-async function newChapter(bookId) {
-  const name = await askName('New chapter', 'Chapter One');
-  if (!name) return;
-  await RecordStore.createChapter(bookId, name);
-  renderTree();
-}
-
-function sceneRow(sc) {
+function sceneRow(sc, deep = false) {
   return tocLine('button', {
-    className: 'toc-scene',
+    className: deep ? 'toc-scene in-part' : 'toc-scene',
     kind: 'scene', id: sc.id,
     title: sc.title,
     figure: fmtWords(sc.wordCount),
@@ -659,36 +673,58 @@ function sceneRow(sc) {
 // button when two scenes are half on screen), or the E key for the scene
 // currently centred.
 
+// The read view and every export share one idea of scope: a work, a
+// part, a chapter, or everything. "Everything" is only meaningful when
+// there's more than one book — with a single work its title is the
+// honest heading, not "Whole manuscript".
 function scopeLabel(scope) {
-  if (scope.kind === 'all') return 'Whole manuscript';
+  const t = App.tree;
   if (scope.kind === 'book')
-    return App.tree.books.find(b => b.id === scope.id)?.title || 'Part';
-  const all = [...App.tree.books.flatMap(b => b.chapters), ...App.tree.looseChapters];
-  return all.find(c => c.id === scope.id)?.title || 'Chapter';
+    return t.works.find(w => w.id === scope.id)?.title || 'Book';
+  if (scope.kind === 'part') {
+    for (const w of t.works) {
+      const p = w.parts.find(x => x.id === scope.id);
+      if (p) return `${w.title} — ${p.title}`;
+    }
+    return 'Part';
+  }
+  if (scope.kind === 'chapter')
+    return RecordStore.allChapters(t).find(c => c.id === scope.id)?.title || 'Chapter';
+  return t.works.length === 1 ? t.works[0].title : 'Everything';
 }
 
-// scenesInScope() — scenes in tree order, each tagged with the chapter it
-// came from so the read view can show breaks between chapters.
+// scenesInScope() — scenes in reading order, each tagged with the chapter
+// it came from so the read view can break between chapters.
 function scenesInScope(scope) {
+  const t = App.tree;
   const out = [];
   const pushChapter = ch => ch.scenes.forEach((sc, i) =>
     out.push({ ...sc, chapterTitle: ch.title, chapterId: ch.id, firstInChapter: i === 0 }));
+  const pushWork = w => {
+    for (const p of w.parts) for (const ch of p.chapters) pushChapter(ch);
+    for (const ch of w.looseChapters) pushChapter(ch);
+  };
 
   if (scope.kind === 'chapter') {
-    const all = [...App.tree.books.flatMap(b => b.chapters), ...App.tree.looseChapters];
-    const ch = all.find(c => c.id === scope.id);
+    const ch = RecordStore.allChapters(t).find(c => c.id === scope.id);
     if (ch) pushChapter(ch);
     return out;
   }
-  const books = scope.kind === 'book'
-    ? App.tree.books.filter(b => b.id === scope.id)
-    : App.tree.books;
-  for (const b of books) for (const ch of b.chapters) pushChapter(ch);
-  if (scope.kind === 'all') {
-    for (const ch of App.tree.looseChapters) pushChapter(ch);
-    App.tree.unfiled.forEach(sc =>
-      out.push({ ...sc, chapterTitle: null, firstInChapter: false }));
+  if (scope.kind === 'part') {
+    for (const w of t.works) {
+      const p = w.parts.find(x => x.id === scope.id);
+      if (p) { for (const ch of p.chapters) pushChapter(ch); break; }
+    }
+    return out;
   }
+  if (scope.kind === 'book') {
+    const w = t.works.find(x => x.id === scope.id);
+    if (w) pushWork(w);
+    return out;
+  }
+  for (const w of t.works) pushWork(w);
+  for (const ch of t.orphanChapters || []) pushChapter(ch);
+  t.unfiled.forEach(sc => out.push({ ...sc, chapterTitle: null, firstInChapter: false }));
   return out;
 }
 
@@ -837,7 +873,16 @@ async function editFromRead(sceneId) {
 async function backToRead() {
   const ret = App.readReturn;
   App.readReturn = null;
-  await openRead(ret?.scope || { kind: 'all', id: null }, ret?.sceneId || null);
+  await openRead(ret?.scope || defaultReadScope(), ret?.sceneId || null);
+}
+
+// With one book, "read everything" means that book — so it gets titled
+// properly instead of "Everything".
+function defaultReadScope() {
+  const works = App.tree?.works || [];
+  return works.length === 1
+    ? { kind: 'book', id: works[0].id }
+    : { kind: 'all', id: null };
 }
 
 function toggleRead() {
@@ -846,7 +891,7 @@ function toggleRead() {
       ? editFromRead(App.data.tabState.activeId)
       : exitRead();
   } else {
-    openRead({ kind: 'all', id: null }, App.data.tabState.activeId);
+    openRead(defaultReadScope(), App.data.tabState.activeId);
   }
 }
 
@@ -885,11 +930,10 @@ function renderTabs() {
 
 function findSceneMeta(id) {
   if (!App.tree) return null;
-  for (const b of App.tree.books)
-    for (const c of b.chapters) {
-      const hit = c.scenes.find(s => s.id === id);
-      if (hit) return hit;
-    }
+  for (const ch of RecordStore.allChapters(App.tree)) {
+    const hit = ch.scenes.find(s => s.id === id);
+    if (hit) return hit;
+  }
   return App.tree.unfiled.find(s => s.id === id) || null;
 }
 
@@ -1320,9 +1364,19 @@ function downloadBlob(data, filename, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function manuscriptTitle() {
-  const books = App.tree?.books || [];
-  return books.length === 1 ? books[0].title : 'Manuscript';
+function manuscriptTitle(scope) {
+  return scope ? scopeLabel(scope) : (App.tree?.works?.[0]?.title || 'Manuscript');
+}
+
+// Which book to export. With one it's obvious; with several, ask rather
+// than silently concatenating unrelated novels into one file.
+async function chooseWork(verb) {
+  const works = App.tree?.works || [];
+  if (works.length <= 1) return works.length ? { kind: 'book', id: works[0].id }
+                                             : { kind: 'all', id: null };
+  const pick = await askChoice(`${verb} which book?`,
+    works.map(w => ({ label: w.title, value: w.id })));
+  return pick ? { kind: 'book', id: pick } : null;
 }
 
 /**
@@ -1361,10 +1415,10 @@ function titlePage(title, words) {
 }
 
 // compileText() — the whole manuscript as one markdown document.
-async function compileText() {
-  const scenes = scenesInScope({ kind: 'all', id: null });
+async function compileText(scope = { kind: 'all', id: null }) {
+  const scenes = scenesInScope(scope);
   const words  = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
-  const parts  = [titlePage(manuscriptTitle(), words)];
+  const parts  = [titlePage(manuscriptTitle(scope), words)];
 
   let lastChapter;
   let first = true;
@@ -1388,8 +1442,10 @@ async function compileText() {
 
 async function exportManuscript() {
   await flushActiveScene();
-  const text = await compileText();
-  downloadBlob(text, `${slug(manuscriptTitle(), 'manuscript')}-${stamp()}.md`,
+  const scope = await chooseWork('Compile');
+  if (!scope) return;
+  const text = await compileText(scope);
+  downloadBlob(text, `${slug(manuscriptTitle(scope), 'manuscript')}-${stamp()}.md`,
                'text/markdown;charset=utf-8');
   showToast('Manuscript compiled.');
 }
@@ -1411,10 +1467,10 @@ async function exportBackup() {
   const files = {};
   const enc = fflate.strToU8;
 
-  const [books, chapters, scenes, cards, events] = await Promise.all([
-    RecordStore.getAll('book'), RecordStore.getAll('chapter'),
-    RecordStore.getAll('scene'), RecordStore.getAll('card'),
-    RecordStore.getAll('event'),
+  const [books, parts, chapters, scenes, cards, events] = await Promise.all([
+    RecordStore.getAll('book'), RecordStore.getAll('part'),
+    RecordStore.getAll('chapter'), RecordStore.getAll('scene'),
+    RecordStore.getAll('card'), RecordStore.getAll('event'),
   ]);
 
   const addScene = (path, i, rec) => {
@@ -1426,15 +1482,23 @@ async function exportBackup() {
   };
 
   const tree = App.tree;
-  tree.books.forEach((b, bi) => {
-    const bp = `manuscript/${pad(bi + 1)}-${slug(b.title, 'part')}`;
-    b.chapters.forEach((c, ci) => {
-      const cp = `${bp}/${pad(ci + 1)}-${slug(c.title, 'chapter')}`;
+  tree.works.forEach((w, wi) => {
+    const wp = `manuscript/${pad(wi + 1)}-${slug(w.title, 'book')}`;
+    let ci = 0;
+    w.parts.forEach((pt, pi) => {
+      const pp = `${wp}/${pad(pi + 1)}-${slug(pt.title, 'part')}`;
+      pt.chapters.forEach((c, i) => {
+        const cp = `${pp}/${pad(i + 1)}-${slug(c.title, 'chapter')}`;
+        c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
+      });
+    });
+    w.looseChapters.forEach(c => {
+      const cp = `${wp}/${pad(++ci)}-${slug(c.title, 'chapter')}`;
       c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
     });
   });
-  tree.looseChapters.forEach((c, ci) => {
-    const cp = `manuscript/${pad(ci + 1)}-${slug(c.title, 'chapter')}`;
+  (tree.orphanChapters || []).forEach((c, i) => {
+    const cp = `manuscript/detached/${pad(i + 1)}-${slug(c.title, 'chapter')}`;
     c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
   });
   tree.unfiled.forEach((s, si) => {
@@ -1450,7 +1514,7 @@ async function exportBackup() {
     version: 1,
     exportedAt: new Date().toISOString(),
     author: App.data.author,
-    records: { books, chapters, scenes, cards, events },
+    records: { books, parts, chapters, scenes, cards, events },
   }, null, 2));
 
   const zipped = fflate.zipSync(files, { level: 6 });
@@ -1954,8 +2018,7 @@ async function fillSceneOptions(selected) {
   const tree = App.tree || await RecordStore.getTree();
   const push = (sc, chapter) =>
     sel.append(new Option(chapter ? `${chapter} — ${sc.title}` : sc.title, sc.id));
-  for (const b of tree.books) for (const c of b.chapters) c.scenes.forEach(s => push(s, c.title));
-  for (const c of tree.looseChapters) c.scenes.forEach(s => push(s, c.title));
+  for (const ch of RecordStore.allChapters(tree)) ch.scenes.forEach(s => push(s, ch.title));
   tree.unfiled.forEach(s => push(s, null));
   sel.value = selected || '';
 }
