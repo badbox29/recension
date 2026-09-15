@@ -537,13 +537,7 @@ async function renderTree() {
       figure: fmtWords(bookWords),
       onOpen: () => openRead({ kind: 'book', id: book.id }),
     });
-    const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
-    caret.addEventListener('click', e => {
-      e.stopPropagation();
-      setCollapsed(book.id, !collapsed);
-      renderTree();
-    });
-    partRow.prepend(caret);
+    partRow.prepend(caretFor(book.id, collapsed, renderTree));
     toc.append(partRow);
     if (collapsed) continue;
 
@@ -554,26 +548,24 @@ async function renderTree() {
     toc.append(addCh);
   }
 
-  toc.append(addPart);
-
   // Chapters with no part. Parts are optional — see createChapter().
   for (const ch of App.tree.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter loose'));
 
-  // "+ part" lives at the bottom of the list with the other add links.
-  // It used to be a button in the rail header, which made Contents the
-  // only tab where creating something worked differently — and crowded
-  // the header enough to clip the button on narrow rails.
-  const addPart = el('button', 'toc-add toc-add-part', '+ part');
-  addPart.addEventListener('click', newPart);
-
   // A top-level "+ chapter" only when there are no parts. With parts on the
   // page it would be ambiguous which one it adds to, and each part already
-  // carries its own — that ambiguity was the duplicate button.
+  // carries its own.
   if (!App.tree.books.length) {
     const addLoose = el('button', 'toc-add toc-add-chapter', '+ chapter');
     addLoose.addEventListener('click', () => newChapter(null));
     toc.append(addLoose);
   }
+
+  // "+ part" sits with the parts it creates, above Unplaced. Unplaced is a
+  // trailing catch-all, so anything appended after it reads as belonging
+  // to it.
+  const addPart = el('button', 'toc-add toc-add-part', '+ part');
+  addPart.addEventListener('click', newPart);
+  toc.append(addPart);
 
   // Unplaced scenes and their add action stay together, so "+ scene" here
   // reads as "add to Unplaced" rather than as a second global button.
@@ -589,6 +581,18 @@ async function renderTree() {
   $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
 }
 
+// A collapse caret. Shared by parts, chapters and card groups so the
+// gesture means the same thing everywhere in the rail.
+function caretFor(id, collapsed, rerender) {
+  const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
+  caret.addEventListener('click', e => {
+    e.stopPropagation();
+    setCollapsed(id, !collapsed);
+    rerender();
+  });
+  return caret;
+}
+
 function chapterRows(ch, className) {
   const rows = [];
   const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
@@ -601,13 +605,7 @@ function chapterRows(ch, className) {
     figure: fmtWords(chWords),
     onOpen: () => openRead({ kind: 'chapter', id: ch.id }),
   });
-  const caret = el('span', 'caret', collapsed ? '\u25B8' : '\u25BE');
-  caret.addEventListener('click', e => {
-    e.stopPropagation();
-    setCollapsed(ch.id, !collapsed);
-    renderTree();
-  });
-  row.prepend(caret);
+  row.prepend(caretFor(ch.id, collapsed, renderTree));
   rows.push(row);
   if (collapsed) return rows;
 
@@ -1482,6 +1480,7 @@ function railSection(name) {
   $('toc').hidden         = name !== 'manuscript';
   $('card-list').hidden   = name !== 'cards';
   $('event-list').hidden  = name !== 'events';
+  $('ev-filter').hidden   = name !== 'events';
   saveLocal();
   if (name === 'cards')  return renderCards();
   if (name === 'events') return renderEvents();
@@ -1495,16 +1494,30 @@ async function renderCards() {
   const cards = Object.values(await RecordStore.getAll('card'));
 
   // Every type is always shown, with its own add link underneath — the
-  // same shape as the Contents tab, where "+ scene" sits under the
-  // chapter it adds to. Choosing the type by WHICH link you click also
-  // fixes a real bug: card creation used to guess the type from whatever
-  // you made last, seed that type's fields, and then leave you to change
-  // the dropdown afterwards — which didn't reseed anything.
+  // same shape as "+ scene" under a chapter. Choosing the type by WHICH
+  // link you click also fixes a real bug: creation used to guess the type
+  // from whatever you made last and seed those fields.
   for (const type of RecordStore.CARD_TYPES) {
     const group = cards.filter(c => c.cardType === type)
                        .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
 
-    list.append(el('div', 'toc-group-label', CARD_TYPE_LABEL[type] || type));
+    // Collapse state is keyed on a synthetic id so it rides along in the
+    // same tocState the parts and chapters use — one mechanism, one place
+    // it's remembered.
+    const groupId = `cards:${type}`;
+    const collapsed = isCollapsed(groupId);
+
+    const head = el('div', 'toc-group-head');
+    head.append(caretFor(groupId, collapsed, renderCards));
+    head.append(el('span', 'toc-group-label inline', CARD_TYPE_LABEL[type] || type));
+    head.append(el('span', 'toc-leader'));
+    if (group.length) head.append(el('span', 'toc-figure', String(group.length)));
+    // The whole heading toggles, not just the caret — a five-pixel target
+    // for something you do constantly is a bad trade.
+    head.addEventListener('click', () => { setCollapsed(groupId, !collapsed); renderCards(); });
+    list.append(head);
+
+    if (collapsed) continue;
 
     for (const c of group) {
       list.append(tocLine('button', {
@@ -1750,24 +1763,43 @@ function formatWhen(iso, precision) {
 
 // ── Rail ───────────────────────────────────────────────────────────
 
+// Filter state. Per-device and per-session: which slice of the timeline
+// you're looking at is a reading position, not a fact about the book.
+const evFilter = { who: '', where: 'all' };
+
+function eventMatches(e) {
+  if (evFilter.who && !(e.participants || []).includes(evFilter.who)) return false;
+  if (evFilter.where === 'shown' && !e.sceneRef) return false;
+  if (evFilter.where === 'off'   &&  e.sceneRef) return false;
+  return true;
+}
+
 async function renderEvents() {
   const list = $('event-list');
   list.replaceChildren();
+  await fillEventFilter();
 
-  const events = Object.values(await RecordStore.getAll('event'));
-  if (!events.length) {
+  const all = Object.values(await RecordStore.getAll('event'));
+  const events = all.filter(eventMatches);
+
+  if (!all.length) {
     list.append(el('p', 'rail-hint',
       'No events yet. Births, deaths, marriages, first meetings \u2014 ' +
       'including the ones that never appear on the page.'));
-    const add = el('button', 'toc-add', '+ event');
-    add.addEventListener('click', () => newEvent());
-    list.append(add);
+    list.append(addEventLink());
+    return;
+  }
+
+  if (!events.length) {
+    list.append(el('p', 'rail-hint', 'Nothing matches that filter.'));
+    list.append(addEventLink());
     return;
   }
 
   // Undated events go last rather than being hidden: an event you haven't
   // dated yet is still an event, and burying it guarantees it stays undated.
-  const dated   = events.filter(e => e.start).sort((x, y) => String(x.start).localeCompare(String(y.start)));
+  const dated   = events.filter(e => e.start)
+                        .sort((x, y) => String(x.start).localeCompare(String(y.start)));
   const undated = events.filter(e => !e.start);
 
   let lastYear = null;
@@ -1786,9 +1818,39 @@ async function renderEvents() {
     for (const e of undated) list.append(eventRow(e));
   }
 
+  if (events.length !== all.length) {
+    list.append(el('p', 'rail-hint',
+      `Showing ${events.length} of ${all.length}.`));
+  }
+  list.append(addEventLink());
+}
+
+function addEventLink() {
   const add = el('button', 'toc-add', '+ event');
   add.addEventListener('click', () => newEvent());
-  list.append(add);
+  return add;
+}
+
+// Only people who actually appear in an event are offered. A filter list
+// of every card in the book, most of which would return nothing, is a
+// list of dead ends.
+async function fillEventFilter() {
+  const sel = $('ev-filter-who');
+  const cards = await RecordStore.getAll('card');
+  const used = new Set();
+  for (const e of Object.values(await RecordStore.getAll('event')))
+    for (const id of e.participants || []) used.add(id);
+
+  const keep = sel.value;
+  sel.replaceChildren();
+  sel.append(new Option('Everyone', ''));
+  [...used]
+    .map(id => cards[id])
+    .filter(Boolean)
+    .sort((x, y) => (x.name || '').localeCompare(y.name || ''))
+    .forEach(c => sel.append(new Option(c.name, c.id)));
+  sel.value = [...sel.options].some(o => o.value === keep) ? keep : '';
+  evFilter.who = sel.value;
 }
 
 function eventRow(e) {
@@ -2115,6 +2177,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-settings').addEventListener('click', openSettings);
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
+
+  $('ev-filter-who').addEventListener('change', e => {
+    evFilter.who = e.target.value;
+    renderEvents();
+  });
+  for (const b of document.querySelectorAll('.ev-filter-where button')) {
+    b.addEventListener('click', () => {
+      evFilter.where = b.dataset.where;
+      for (const o of document.querySelectorAll('.ev-filter-where button'))
+        o.setAttribute('aria-pressed', String(o === b));
+      renderEvents();
+    });
+  }
 
   for (const id of ['ev-title', 'ev-location', 'ev-body'])
     $(id).addEventListener('input', scheduleEventSave);
