@@ -334,6 +334,18 @@ function openRowMenu(anchor, kind, id, title) {
   closeRowMenu();
   const menu = el('div', 'row-menu');
 
+  // Containers can be read straight through. Scenes and cards can't —
+  // a scene is already what the editor shows.
+  if (kind === 'book' || kind === 'part' || kind === 'chapter') {
+    const read = el('button', null, 'Read through');
+    read.addEventListener('click', e => {
+      e.stopPropagation();
+      closeRowMenu();
+      openRead({ kind, id });
+    });
+    menu.append(read);
+  }
+
   const rename = el('button', null, 'Rename');
   rename.addEventListener('click', e => {
     e.stopPropagation();
@@ -607,7 +619,10 @@ async function renderTree() {
       kind: 'book', id: work.id,
       title: work.title,
       figure: fmtWords(work.words),
-      onOpen: () => openRead({ kind: 'book', id: work.id }),
+      // Clicking the row expands it. Reading a whole book is rare and
+      // lives in the row menu; hiding the entire tree behind a 10px
+      // caret while the obvious click did something else was a trap.
+      onOpen: () => { setCollapsed(work.id, !collapsed); renderTree(); },
     });
     row.prepend(caretFor(work.id, collapsed, renderTree));
     toc.append(row);
@@ -620,7 +635,7 @@ async function renderTree() {
         kind: 'part', id: part.id,
         title: part.title,
         figure: fmtWords(part.words),
-        onOpen: () => openRead({ kind: 'part', id: part.id }),
+        onOpen: () => { setCollapsed(part.id, !pCollapsed); renderTree(); },
       });
       pRow.prepend(caretFor(part.id, pCollapsed, renderTree));
       toc.append(pRow);
@@ -674,6 +689,36 @@ function caretFor(id, collapsed, rerender) {
     rerender();
   });
   return caret;
+}
+
+// chapterRows(ch, className) — a chapter heading, its scenes, and the
+// "+ scene" link, as a flat array. Flat rather than nested because the
+// rail is a single scrolling column; nesting DOM here would buy nothing
+// and complicate the indentation, which is carried by className.
+function chapterRows(ch, className) {
+  const rows = [];
+  const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+  const collapsed = isCollapsed(ch.id);
+  const deep = className.includes('in-part');
+
+  const row = tocLine('div', {
+    className,
+    kind: 'chapter', id: ch.id,
+    title: ch.title,
+    figure: fmtWords(chWords),
+    onOpen: () => { setCollapsed(ch.id, !collapsed); renderTree(); },
+  });
+  row.prepend(caretFor(ch.id, collapsed, renderTree));
+  rows.push(row);
+  if (collapsed) return rows;
+
+  for (const sc of ch.scenes) rows.push(sceneRow(sc, deep));
+
+  rows.push(addLink('+ scene', deep ? 'in-part' : '', async () => {
+    const id = await RecordStore.createScene(ch.id);
+    if (id) { await renderTree(); openScene(id); }
+  }));
+  return rows;
 }
 
 function sceneRow(sc, deep = false) {
