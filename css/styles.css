@@ -1337,10 +1337,9 @@ html.typewriter .scene { padding-bottom: 0; }
 .rail-head { padding-bottom: 0.75rem; }
 
 /* "+ part" is a top-level action, so it sits flush like the part rows
-   rather than indented under one. */
+   rather than indented under one. No rule above it — it belongs with the
+   parts it creates, and a divider there would cut it off from them. */
 .toc-add-part {
   padding-left: 0.375rem;
-  margin-top: 0.75rem;
-  border-top: 1px solid var(--rule-soft);
-  padding-top: 0.625rem;
+  margin-top: 0.5rem;
 }
