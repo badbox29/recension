@@ -1081,6 +1081,16 @@ function ensureEditor() {
     const target = linkAt(cm, pos);
     if (!target) return;
     e.preventDefault();
+    // Park the caret after the link rather than inside it. Leaving it
+    // in the middle means the link is still "being edited" when you
+    // come back, and shows its full syntax.
+    const line = cm.getLine(pos.line) || '';
+    for (const m of line.matchAll(/\[\[[^\[\]]+\]\]/g)) {
+      if (pos.ch >= m.index && pos.ch <= m.index + m[0].length) {
+        cm.setCursor({ line: pos.line, ch: m.index + m[0].length });
+        break;
+      }
+    }
     followLink(target);
   });
 
@@ -1101,7 +1111,11 @@ function ensureEditor() {
     updateAutocomplete(sel);
   });
 
-  cm.on('blur', () => setTimeout(closeAutocomplete, 120));
+  cm.on('blur', () => {
+    setTimeout(closeAutocomplete, 120);
+    concealWikilinks(cm);      // nothing should stay expanded once you leave
+  });
+  cm.on('focus', () => concealWikilinks(cm));
   // cursorActivity covers typing, arrow keys, and clicks alike — all the
   // ways the caret can end up on a different line.
   cm.on('cursorActivity', () => {
@@ -2369,7 +2383,12 @@ function concealWikilinks(cm) {
   for (const m of cm._wlMarks || []) m.clear();
   cm._wlMarks = [];
 
-  const cur = cm.getCursor();
+  // Only reveal for a caret that's actually being used. An editor
+  // without focus has no meaningful caret — it's wherever you last left
+  // it — and honouring it meant a link stayed expanded after you
+  // followed it and came back, because following it put the caret
+  // inside.
+  const cur = cm.hasFocus() ? cm.getCursor() : null;
   const doc = cm.getValue().split('\n');
 
   doc.forEach((line, ln) => {
@@ -2379,7 +2398,7 @@ function concealWikilinks(cm) {
 
       // Caret inside (or touching) this link — show it in full so it
       // can be edited.
-      if (cur.line === ln && cur.ch >= start && cur.ch <= end) continue;
+      if (cur && cur.line === ln && cur.ch >= start && cur.ch <= end) continue;
 
       // Everything up to and including the pipe, or just the opening
       // brackets when there is no pipe.
