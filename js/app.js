@@ -2873,8 +2873,20 @@ async function renderTimeline() {
   }
 
   // ── Lanes ──
+  const sceneTitle = Object.fromEntries(
+    RecordStore.allChapters(App.tree || { works: [] }).flatMap(ch =>
+      ch.scenes.map(s => [s.id, `${ch.title} — ${s.title}`])));
+
   lanes.forEach((lane, i) => {
     const y = TL.padTop + i * TL.laneH + TL.laneH / 2;
+
+    // A banded background. Nothing decorative — with a dozen lanes it's
+    // what stops the eye sliding onto the wrong row halfway across.
+    const band = mk('rect', {
+      x: 0, y: y - TL.laneH / 2, width, height: TL.laneH,
+      class: 'tl-lane' + (i % 2 ? ' alt' : ''),
+    });
+    svg.append(band);
 
     svg.append(mk('text', {
       x: TL.padLeft - 12, y: y + 4, class: 'tl-lane-name', 'text-anchor': 'end',
@@ -2899,7 +2911,10 @@ async function renderTimeline() {
       const w = Math.max(3, (end - start) * pxPerYear);
 
       const g = mk('g', { class: 'tl-ev', tabindex: '0', role: 'button' });
-      g.append(mk('title', {}, `${e.title} — ${formatWhen(e.start, e.precision)}`));
+      // No SVG <title>: the browser's native tooltip arrives after a
+      // second, in the OS font, and can't show participants. A styled
+      // one follows the pointer immediately and says everything.
+      g.setAttribute('aria-label', `${e.title}, ${formatWhen(e.start, e.precision)}`);
 
       if (w > 6) {
         // Imprecise or lasting — draw the span, so a year-precision date
@@ -2914,6 +2929,13 @@ async function renderTimeline() {
         }));
       }
 
+      const names = (e.participants || []).map(id => cards[id]?.name).filter(Boolean);
+      g.addEventListener('mouseenter', ev => showTlTip(ev, e, names, sceneTitle[e.sceneRef]));
+      g.addEventListener('mousemove', moveTlTip);
+      g.addEventListener('mouseleave', hideTlTip);
+      g.addEventListener('focus', ev => showTlTip(ev, e, names, sceneTitle[e.sceneRef]));
+      g.addEventListener('blur', hideTlTip);
+
       g.addEventListener('click', () => { railSection('events'); openEvent(e.id); });
       g.addEventListener('keydown', ev => {
         if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); railSection('events'); openEvent(e.id); }
@@ -2925,6 +2947,57 @@ async function renderTimeline() {
   host.append(svg);
 }
 
+// ── Tooltip ────────────────────────────────────────────────────────
+
+let _tlTip = null;
+
+function showTlTip(ev, e, names, scene) {
+  if (!_tlTip) {
+    _tlTip = el('div', 'tl-tip');
+    document.body.append(_tlTip);
+  }
+  _tlTip.replaceChildren();
+
+  const head = el('div', 'tl-tip-head');
+  head.append(el('span', 'tl-tip-mark', EVENT_KIND_MARK[e.kind] || '\u00B7'));
+  head.append(el('span', 'tl-tip-title', e.title || 'Untitled event'));
+  _tlTip.append(head);
+
+  _tlTip.append(el('div', 'tl-tip-when', formatWhen(e.start, e.precision) +
+    (e.end ? ` \u2013 ${formatWhen(e.end, e.precision)}` : '')));
+
+  const rows = [];
+  if (names.length)  rows.push(['Who', names.join(', ')]);
+  if (e.location)    rows.push(['Where', e.location]);
+  // Whether it happens on the page is the distinction events exist for,
+  // so it's always stated rather than only when there's a scene.
+  rows.push(['Shown', scene || 'Offscreen']);
+
+  for (const [k, v] of rows) {
+    const r = el('div', 'tl-tip-row');
+    r.append(el('span', 'tl-tip-k', k));
+    r.append(el('span', 'tl-tip-v', v));
+    _tlTip.append(r);
+  }
+
+  _tlTip.hidden = false;
+  moveTlTip(ev);
+}
+
+function moveTlTip(ev) {
+  if (!_tlTip || _tlTip.hidden) return;
+  const pad = 14;
+  const w = _tlTip.offsetWidth, h = _tlTip.offsetHeight;
+  // Flip rather than overflow: near the right edge the tooltip goes to
+  // the left of the pointer, near the bottom it goes above.
+  const x = ev.clientX + pad + w > window.innerWidth ? ev.clientX - pad - w : ev.clientX + pad;
+  const y = ev.clientY + pad + h > window.innerHeight ? ev.clientY - pad - h : ev.clientY + pad;
+  _tlTip.style.left = `${Math.max(8, x)}px`;
+  _tlTip.style.top  = `${Math.max(8, y)}px`;
+}
+
+function hideTlTip() { if (_tlTip) _tlTip.hidden = true; }
+
 async function openTimeline() {
   await flushActiveScene();
   await flushActiveCard();
@@ -2933,6 +3006,7 @@ async function openTimeline() {
   App.view = 'timeline';
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'empty']) $(id).hidden = true;
   $('timeline-wrap').hidden = false;
+  hideTlTip();
   $('tally').textContent = '';
   await renderTimeline();
 }
