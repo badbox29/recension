@@ -1564,3 +1564,19 @@ a.wl.unknown {
 /* An unclosed [[ — just the brackets, faint. Nothing downstream is a
    link yet, so nothing downstream should look like one. */
 .prose .cm-wikilink-open { color: var(--ink-faint); }
+
+/* In wrap mode the popup is choosing a TARGET for words already on the
+   page, so it says so — otherwise it looks identical to the insert
+   flow and you can't tell which one you're in. */
+.wl-complete[data-mode="wrap"]::before {
+  content: "Link “" attr(data-text) "” to…";
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  padding: 0.25rem 0.5rem 0.375rem;
+  border-bottom: 1px solid var(--rule-soft);
+  margin-bottom: 0.1875rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
