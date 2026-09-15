@@ -1593,3 +1593,84 @@ a.wl.unknown {
 /* A concealed link is just tinted words — no brackets, no underline.
    It should read as prose that happens to be connected to something. */
 .prose .cm-wikilink { color: var(--rubric); }
+
+/* ══ Timeline ══════════════════════════════════════════════════════
+   Lanes of people, years across the page. Kept in the same ink-and-
+   rubric palette as everything else: a chart that looks like a chart
+   would sit oddly inside a manuscript tool. */
+
+.timeline-wrap { padding: 2rem 1.5rem 4rem; width: 100%; }
+.timeline-wrap[hidden] { display: none; }
+
+.tl-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.tl-head h1 {
+  margin: 0;
+  font-family: var(--prose);
+  font-size: var(--t-xl);
+  font-weight: 600;
+}
+
+.tl-zoom { display: flex; gap: 1px; flex: none; }
+.tl-zoom button {
+  font: inherit;
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  background: none;
+  border: 1px solid var(--rule);
+  padding: 0.1875rem 0.5rem;
+  cursor: pointer;
+}
+.tl-zoom button:first-child { border-radius: 3px 0 0 3px; }
+.tl-zoom button:last-child  { border-radius: 0 3px 3px 0; }
+.tl-zoom button + button { border-left: 0; }
+.tl-zoom button:hover { color: var(--ink); }
+
+/* Horizontal scroll lives here, not on the page: zooming in shouldn't
+   make the whole app scroll sideways. */
+.timeline { overflow-x: auto; overflow-y: hidden; padding-bottom: 0.5rem; }
+.tl-svg { display: block; }
+
+.tl-grid { stroke: var(--rule-soft); stroke-width: 1; }
+.tl-rule { stroke: var(--rule-soft); stroke-width: 1; stroke-dasharray: 2 4; }
+
+.tl-tick {
+  fill: var(--ink-faint);
+  font-family: var(--prose);
+  font-size: 11px;
+  font-variant-numeric: oldstyle-nums;
+}
+
+.tl-lane-name {
+  fill: var(--ink);
+  font-family: var(--prose);
+  font-size: 12px;
+}
+
+/* The life bar — birth to death. The spine a character's other events
+   hang on, so it's solid where everything else is a mark. */
+.tl-life { stroke: var(--ink-faint); stroke-width: 2; opacity: .5; }
+
+.tl-ev { cursor: pointer; }
+.tl-ev:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.tl-dot  { fill: var(--ink-soft); stroke: var(--vellum); stroke-width: 1.5; }
+.tl-band { fill: var(--ink-soft); opacity: .55; }
+.tl-ev:hover .tl-dot, .tl-ev:hover .tl-band { fill: var(--rubric); opacity: 1; }
+
+/* Beginnings and endings are the two that matter at a glance. */
+.tl-dot.k-birth,    .tl-band.k-birth    { fill: var(--ink); }
+.tl-dot.k-death,    .tl-band.k-death    { fill: var(--rubric); }
+.tl-dot.k-marriage, .tl-band.k-marriage { fill: var(--rubric-dim); }
+.tl-dot.k-conflict, .tl-band.k-conflict { fill: var(--rubric-dim); }
+
+@media (max-width: 44rem) {
+  .timeline-wrap { padding: 1.5rem 1rem 4rem; }
+}
