@@ -567,6 +567,34 @@ function confirmDelete(kind, id, title) {
 
 // ── Tree ───────────────────────────────────────────────────────────
 
+// ── Creating structure ─────────────────────────────────────────────
+// Each level asks for its name up front: a structural tier only exists
+// because you had a name in mind for it. Scenes are the exception —
+// those are made mid-flow, often before you know what the scene is.
+
+async function newWork() {
+  const name = await askName('New book', 'Title');
+  if (!name) return;
+  await RecordStore.createBook(name);
+  renderTree();
+}
+
+async function newPart(bookId) {
+  const name = await askName('New part', 'Part One');
+  if (!name) return;
+  await RecordStore.createPart(bookId, name);
+  renderTree();
+}
+
+// partId null puts the chapter directly under the book, which is where
+// most chapters live — parts are optional.
+async function newChapter(bookId, partId = null) {
+  const name = await askName('New chapter', 'Chapter One');
+  if (!name) return;
+  await RecordStore.createChapter(bookId, name, partId);
+  renderTree();
+}
+
 async function renderTree() {
   App.tree = await RecordStore.getTree();
   const toc = $('toc');
