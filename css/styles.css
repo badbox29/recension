@@ -1410,3 +1410,13 @@ html.typewriter .scene { padding-bottom: 0; }
   border-color: var(--ink);
   color: var(--vellum);
 }
+
+/* auth.js also emits .btn-outline in a few places (the worker Test
+   button). Same treatment as .btn-ghost — without a rule it renders as a
+   raw browser button beside styled ones. */
+.btn-outline {
+  background: none;
+  border-color: var(--rule);
+  color: var(--ink-soft);
+}
+.btn-outline:hover { color: var(--ink); border-color: var(--ink-faint); }
