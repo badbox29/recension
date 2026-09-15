@@ -649,17 +649,26 @@ svg { width: 1.125rem; height: 1.125rem; fill: none;
   .scene { padding: 1.75rem 1.125rem 6rem; }
   .scene-title { font-size: var(--t-lg); }
 
-  /* Read-only on small screens. The manuscript travels; the drafting
-     surface stays at the desk. Metadata fields have nothing to edit,
-     so they read as plain lines. */
-  .scene-meta { grid-template-columns: 1fr; }
-  .meta-field input, .meta-field select {
+  /* Read-only on small screens — THE SCENE EDITOR ONLY. The manuscript
+     travels; the drafting surface stays at the desk.
+
+     Every selector here is scoped under .scene. Unscoped, they matched
+     .meta-field anywhere, which silently made the event editor's date
+     fields and the card editor's fields unclickable on any narrow
+     window: nothing looked broken, the inputs just didn't respond.
+     Cards and events are reference data, not prose — editing those on a
+     phone is exactly what you'd want to do. */
+  .scene .scene-meta { grid-template-columns: 1fr; }
+  .scene .meta-field input, .scene .meta-field select {
     pointer-events: none;
     border-bottom-color: transparent !important;
     color: var(--ink-soft);
     appearance: none;
   }
-  .scene-title { pointer-events: none; }
+  .scene .scene-title { pointer-events: none; }
+
+  /* The event and card editors stay fully editable. */
+  #event-edit .scene-meta, #card-edit .scene-meta { grid-template-columns: 1fr; }
 }
 
 /* ── Row actions ───────────────────────────────────────────────── */
