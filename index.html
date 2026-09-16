@@ -22,7 +22,7 @@
      app.js. The ?v= on each asset is what forces a fresh fetch, so if you
      change a file and don't change this number, the change may not reach
      your phone at all. Keep the number the same across all five. -->
-<link rel="stylesheet" href="css/styles.css?v=28" />
+<link rel="stylesheet" href="css/styles.css?v=29" />
 
 <!-- Applied before first paint so the page never flashes light then dark. -->
 <script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -198,6 +198,7 @@
       <div class="scene-meta">
         <label class="meta-field">
           <span>Kind</span>
+          <i class="kind-cue" id="ev-kind-cue" aria-hidden="true"></i>
           <select id="ev-kind">
             <option value="birth">Birth</option>
             <option value="death">Death</option>
@@ -491,9 +492,9 @@
 
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
-<script src="js/auth.js?v=28"></script>
-<script src="js/recordStore.js?v=28"></script>
-<script src="js/sync.js?v=28"></script>
-<script src="js/app.js?v=28"></script>
+<script src="js/auth.js?v=29"></script>
+<script src="js/recordStore.js?v=29"></script>
+<script src="js/sync.js?v=29"></script>
+<script src="js/app.js?v=29"></script>
 </body>
 </html>
