@@ -599,6 +599,9 @@ function confirmDelete(kind, id, title) {
 async function newWork() {
   const name = await askName('New book', 'Title');
   if (!name) return;
+  // First real content of a session — a genuine user gesture, and the
+  // moment the data becomes worth protecting.
+  maybeRequestPersistence();
   await RecordStore.createBook(name);
   renderTree();
 }
@@ -1209,6 +1212,7 @@ async function flushActiveScene() {
   clearTimeout(_saveTimer);
   const sc = App.activeScene;
   if (!sc || App.readOnly) return;
+  maybeRequestPersistence();
 
   const next = {
     ...sc,
@@ -1378,6 +1382,7 @@ function openSettings() {
   // click and then explains itself, which is worse than not being there.
   $('account-actions').style.display = Auth.isGuest() ? 'none' : '';
   loadAuthorFields();
+  renderStorageStatus();
   showSettingsTab(_settingsTab);
   openModal('modal-settings');
 }
@@ -1788,6 +1793,7 @@ async function renderCards() {
 async function newCard(type = 'character') {
   const name = await askName(`New ${CARD_TYPE_SINGULAR[type] || 'card'}`, 'Name');
   if (!name) return;
+  maybeRequestPersistence();
 
   const id = await RecordStore.createCard(type, name);
   if (!id) return;
@@ -3218,6 +3224,112 @@ async function openGrid() {
   await renderGrid();
 }
 
+// ══ Storage persistence ════════════════════════════════════════════
+//
+// By default IndexedDB sits in a "best-effort" bucket: under disk
+// pressure browsers evict least-recently-used origins wholesale.
+// navigator.storage.persist() asks to be skipped by that sweep.
+//
+// WHAT IT DOES NOT DO. It doesn't protect against you clearing site
+// data, a private window, or uninstalling the browser. It is a seatbelt
+// against the browser's own housekeeping, not a safe. Sync is the first
+// line of defence here and the backup zip is the second; this only
+// matters in the window where something is written locally and hasn't
+// reached the worker yet.
+//
+// SAFARI is the case that actually bites, and it isn't about disk
+// space: with tracking prevention on, an origin with no interaction for
+// seven days has its script-created data deleted outright. Persistence
+// exempts you; so does adding the site to the Home Screen.
+//
+// WHEN TO ASK. Firefox shows a real permission prompt, so this fires on
+// the first meaningful content write — a genuine user gesture, at the
+// moment the data becomes worth protecting. Asking during boot is how
+// you get declined.
+
+const PERSIST_ASKED_KEY = 'rec_persist_asked';
+
+async function storageStatus() {
+  if (!navigator.storage) return { supported: false };
+  const persisted = navigator.storage.persisted
+    ? await navigator.storage.persisted().catch(() => false)
+    : false;
+  let usage = null, quota = null;
+  if (navigator.storage.estimate) {
+    try { ({ usage, quota } = await navigator.storage.estimate()); } catch {}
+  }
+  return { supported: true, persisted, usage, quota };
+}
+
+/**
+ * requestPersistence({ force }) — ask once, remember the answer.
+ *
+ * Re-prompting after a decline is worse than never asking: it trains
+ * people to dismiss the dialog. `force` is for the Settings button,
+ * where asking again is the explicit point.
+ */
+async function requestPersistence({ force = false } = {}) {
+  if (!navigator.storage?.persist) return false;
+
+  if (await navigator.storage.persisted().catch(() => false)) return true;
+  if (!force && localStorage.getItem(PERSIST_ASKED_KEY)) return false;
+
+  try { localStorage.setItem(PERSIST_ASKED_KEY, '1'); } catch {}
+
+  let granted = false;
+  try { granted = await navigator.storage.persist(); } catch { granted = false; }
+
+  if (force) {
+    showToast(granted
+      ? 'Storage is now protected from automatic clearing.'
+      : 'The browser declined. Adding Recension to your home screen usually helps.',
+      6000);
+  }
+  renderStorageStatus();
+  return granted;
+}
+
+// Fired from the first content write of a session. Silent either way —
+// this is insurance, not a feature to announce.
+let _persistTried = false;
+function maybeRequestPersistence() {
+  if (_persistTried) return;
+  _persistTried = true;
+  requestPersistence();
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+async function renderStorageStatus() {
+  const note = $('storage-note');
+  const btn = $('btn-persist');
+  if (!note) return;
+
+  const s = await storageStatus();
+  if (!s.supported) {
+    note.textContent = 'This browser does not report storage status.';
+    if (btn) btn.hidden = true;
+    return;
+  }
+
+  // Report what's actually stored rather than a reassuring abstraction.
+  const used = fmtBytes(s.usage);
+  const of = s.quota ? ` of about ${fmtBytes(s.quota)} available` : '';
+
+  note.textContent = s.persisted
+    ? `Protected. Your writing won't be cleared automatically. Using ${used}${of}.`
+    : `Not protected — the browser may clear this site's data if the device runs low on space. Using ${used}${of}.`;
+  note.classList.toggle('bad', !s.persisted);
+  if (btn) btn.hidden = s.persisted;
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -3546,6 +3658,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('btn-export-manuscript').addEventListener('click', () => exportManuscript()
     .catch(e => { console.error(e); showToast('Compile failed - see the console.'); }));
+  $('btn-persist').addEventListener('click', () => requestPersistence({ force: true }));
   $('btn-import').addEventListener('click', () => $('import-file').click());
   $('import-file').addEventListener('change', async e => {
     const file = e.target.files?.[0];
