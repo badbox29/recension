@@ -3330,6 +3330,65 @@ async function renderStorageStatus() {
   if (btn) btn.hidden = s.persisted;
 }
 
+// ══ Offline ════════════════════════════════════════════════════════
+//
+// Registers the service worker that caches the app shell. Without it,
+// closing the tab without a connection meant Recension wouldn't load at
+// all — the manuscript sat safe in IndexedDB and was unreachable.
+//
+// Deploys are handled by bumping SW_VERSION in sw.js. When a new worker
+// takes over mid-session the page is running old code against possibly
+// new assets, so it says so and offers a reload rather than swapping
+// things out underneath someone who is writing.
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // A service worker needs a secure context. On localhost over http it
+  // is allowed; anywhere else it silently won't register, which is
+  // worth knowing when testing from a file:// URL.
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('sw.js');
+
+      reg.addEventListener('updatefound', () => {
+        const fresh = reg.installing;
+        if (!fresh) return;
+        fresh.addEventListener('statechange', () => {
+          // installed + an existing controller means an UPDATE, not a
+          // first install. A first install shouldn't announce itself.
+          if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+            offerUpdate();
+          }
+        });
+      });
+    } catch (e) {
+      console.warn('[app] service worker registration failed:', e);
+    }
+  });
+}
+
+let _updateOffered = false;
+function offerUpdate() {
+  if (_updateOffered) return;
+  _updateOffered = true;
+
+  const bar = el('div', 'update-bar');
+  bar.append(el('span', null, 'A new version is ready.'));
+  const btn = el('button', 'ghost-btn', 'Reload');
+  btn.addEventListener('click', async () => {
+    // Flush first. Reloading over unsaved words would be an unusually
+    // cruel way to deliver an improvement.
+    await flushActiveScene();
+    await flushActiveCard();
+    await flushActiveEvent();
+    location.reload();
+  });
+  const later = el('button', 'ghost-btn', 'Later');
+  later.addEventListener('click', () => bar.remove());
+  bar.append(btn, later);
+  document.body.append(bar);
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -3451,6 +3510,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ── Events ──────────────────────────────────────────────────────
+  registerServiceWorker();
   loadTypography();
   syncTypePopover();
   bindAuthorFields();
