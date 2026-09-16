@@ -1815,13 +1815,22 @@ a.wl.unknown {
 .tl-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 0.375rem;
+  justify-content: flex-start;   /* keys pack left, never distribute */
+  align-items: center;
+  gap: 0.25rem 0.125rem;
   margin: -0.75rem 0 1.25rem;
+  width: fit-content;            /* the row is as wide as its keys */
+  max-width: 100%;
 }
 
 .tl-key {
   display: inline-flex;
   align-items: center;
+  /* Content width only. Without this a stretched key drags the whole
+     legend across the page, which is what it was doing. */
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
   gap: 0.375rem;
   font-size: var(--t-xs);
   color: var(--ink-soft);
