@@ -2024,6 +2024,13 @@ function eventMatches(e) {
   return true;
 }
 
+// Small colour chip beside the Kind select, so the editor agrees with
+// the timeline and the rail about what this event looks like.
+function paintKindCue() {
+  const cue = $('ev-kind-cue');
+  if (cue) cue.style.background = `var(--k-${$('ev-kind').value || 'other'})`;
+}
+
 async function renderEvents() {
   const list = $('event-list');
   list.replaceChildren();
@@ -2113,8 +2120,12 @@ function eventRow(e) {
     current: App.activeEvent?.id === e.id,
     onOpen: () => { openEvent(e.id); if (App.readOnly) closeRail(); },
   });
-  const mark = el('span', 'ev-mark', EVENT_KIND_MARK[e.kind] || '\u00B7');
-  mark.title = e.kind || 'other';
+  const kind = e.kind || 'other';
+  const mark = el('span', 'ev-mark', EVENT_KIND_MARK[kind] || '\u00B7');
+  // Same colour as the dot on the timeline, so the rail and the chart
+  // read as one thing rather than two lists that happen to agree.
+  mark.style.color = `var(--k-${kind})`;
+  mark.title = kind;
   row.prepend(mark);
   return row;
 }
@@ -2149,6 +2160,7 @@ async function openEvent(id) {
 
   $('ev-title').value    = e.title || '';
   $('ev-kind').value     = e.kind || 'other';
+  paintKindCue();
   $('ev-start').value    = e.start || '';
   $('ev-end').value      = e.end || '';
   $('ev-location').value = e.location || '';
@@ -3005,13 +3017,23 @@ function showTlTip(ev, e, names, scene) {
   }
   _tlTip.replaceChildren();
 
+  const kind = e.kind || 'other';
+  // The card takes the kind's own colour, so what you hovered and what
+  // you're reading are obviously the same thing — otherwise every
+  // tooltip looks identical and you lose track of which dot it belongs
+  // to on a crowded lane.
+  _tlTip.style.setProperty('--k', `var(--k-${kind})`);
+
   const head = el('div', 'tl-tip-head');
-  head.append(el('span', 'tl-tip-mark', EVENT_KIND_MARK[e.kind] || '\u00B7'));
+  head.append(el('span', 'tl-tip-mark', EVENT_KIND_MARK[kind] || '\u00B7'));
   head.append(el('span', 'tl-tip-title', e.title || 'Untitled event'));
   _tlTip.append(head);
 
-  _tlTip.append(el('div', 'tl-tip-when', formatWhen(e.start, e.precision) +
+  const meta = el('div', 'tl-tip-meta');
+  meta.append(el('span', 'tl-tip-kind', kind[0].toUpperCase() + kind.slice(1)));
+  meta.append(el('span', 'tl-tip-when', formatWhen(e.start, e.precision) +
     (e.end ? ` \u2013 ${formatWhen(e.end, e.precision)}` : '')));
+  _tlTip.append(meta);
 
   const rows = [];
   if (names.length)  rows.push(['Who', names.join(', ')]);
@@ -3259,6 +3281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('ev-body').addEventListener('input', () => autoGrow($('ev-body')));
   for (const id of ['ev-kind', 'ev-scene'])
     $(id).addEventListener('change', () => flushActiveEvent());
+  $('ev-kind').addEventListener('change', paintKindCue);
   for (const id of ['ev-start', 'ev-end']) {
     $(id).addEventListener('input', updateWhenHint);
     $(id).addEventListener('change', () => flushActiveEvent());
