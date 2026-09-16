@@ -16,13 +16,17 @@
       href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,600;1,400&display=swap" />
 
 <link rel="stylesheet" href="js/vendor/easymde.min.css" />
-<!-- CACHE BUSTING — bump BUILD on every deploy.
-     GitHub Pages sends long cache headers and mobile browsers honour them
-     aggressively: a plain refresh will happily keep running last week's
-     app.js. The ?v= on each asset is what forces a fresh fetch, so if you
-     change a file and don't change this number, the change may not reach
-     your phone at all. Keep the number the same across all five. -->
-<link rel="stylesheet" href="css/styles.css?v=32" />
+<!-- Versioning lives in sw.js now: bump SW_VERSION there on every
+     deploy and the service worker refetches everything. The ?v= query
+     strings this file used to carry are gone — two cache-busting
+     mechanisms fighting each other is worse than either alone. -->
+<link rel="stylesheet" href="css/styles.css" />
+
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Recension" />
 
 <!-- Applied before first paint so the page never flashes light then dark. -->
 <script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -518,9 +522,9 @@
 
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
-<script src="js/auth.js?v=32"></script>
-<script src="js/recordStore.js?v=32"></script>
-<script src="js/sync.js?v=32"></script>
-<script src="js/app.js?v=32"></script>
+<script src="js/auth.js"></script>
+<script src="js/recordStore.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>
