@@ -22,7 +22,7 @@
      app.js. The ?v= on each asset is what forces a fresh fetch, so if you
      change a file and don't change this number, the change may not reach
      your phone at all. Keep the number the same across all five. -->
-<link rel="stylesheet" href="css/styles.css?v=31" />
+<link rel="stylesheet" href="css/styles.css?v=32" />
 
 <!-- Applied before first paint so the page never flashes light then dark. -->
 <script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -406,6 +406,14 @@
       </section>
 
       <section class="set-block">
+        <h3>Storage</h3>
+        <p class="note" id="storage-note">Checking…</p>
+        <div class="btn-row">
+          <button class="ghost-btn" id="btn-persist" hidden>Protect this site's data</button>
+        </div>
+      </section>
+
+      <section class="set-block">
         <h3>Import</h3>
         <p class="note">Restore from a backup zip, or the
           recension-backup.json inside one. Adding is the default and
@@ -510,9 +518,9 @@
 
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
-<script src="js/auth.js?v=31"></script>
-<script src="js/recordStore.js?v=31"></script>
-<script src="js/sync.js?v=31"></script>
-<script src="js/app.js?v=31"></script>
+<script src="js/auth.js?v=32"></script>
+<script src="js/recordStore.js?v=32"></script>
+<script src="js/sync.js?v=32"></script>
+<script src="js/app.js?v=32"></script>
 </body>
 </html>
