@@ -1858,3 +1858,149 @@ a.wl.unknown {
 @media (max-width: 44rem) {
   .timeline-wrap { padding: 1.5rem 1rem 4rem; }
 }
+
+/* ══ Grid ══════════════════════════════════════════════════════════
+   Scenes down, cards across. A table rather than SVG: sticky headers,
+   text selection and keyboard navigation all come free, and the
+   content is genuinely tabular. */
+
+.grid-wrap { padding: 2rem 1.5rem 4rem; width: 100%; min-width: 0; }
+.grid-wrap[hidden] { display: none; }
+
+.card-tools { padding: 0 0.875rem 0.625rem; }
+.card-tools[hidden] { display: none; }
+
+/* Both axes scroll inside this box, so a wide grid never makes the app
+   itself scroll sideways. */
+.grid-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 14rem);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+}
+
+.grid-table { border-collapse: separate; border-spacing: 0; font-size: var(--t-sm); }
+
+.grid-table th, .grid-table td {
+  border-right: 1px solid var(--rule-soft);
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 0;
+}
+
+/* Column headers run vertically. With a dozen names across, horizontal
+   labels would set the column width and the grid would be mostly
+   whitespace. */
+.g-col {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--vellum);
+  height: 8.5rem;
+  vertical-align: bottom;
+  padding: 0.375rem 0;
+}
+.g-col-btn {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font: inherit;
+  font-family: var(--prose);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0.25rem 0;
+  max-height: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.g-col-btn:hover { color: var(--rubric); }
+
+/* The corner and the scene column both stick, so you never lose track
+   of which row or column you're reading — the failure mode of every
+   wide matrix. */
+.g-corner {
+  position: sticky;
+  left: 0; top: 0;
+  z-index: 3;
+  background: var(--vellum);
+  text-align: left;
+  font-weight: 400;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  padding: 0.5rem 0.625rem;
+  min-width: 13rem;
+}
+
+.g-row {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--vellum);
+  text-align: left;
+  font-weight: 400;
+  min-width: 13rem;
+}
+.g-row-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-family: var(--prose);
+  color: var(--ink);
+  background: none;
+  border: 0;
+  padding: 0.375rem 0.625rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.g-row-btn:hover { color: var(--rubric); }
+
+.g-words {
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums tabular-nums;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  text-align: right;
+  padding: 0 0.5rem;
+  position: sticky;
+  top: 0;
+  background: var(--vellum);
+}
+thead .g-words { z-index: 2; }
+
+.g-chapter-row td {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  padding: 0.3125rem 0.625rem;
+  position: sticky;
+  left: 0;
+}
+
+.g-cell { width: 2rem; min-width: 2rem; text-align: center; }
+.g-cell.on { cursor: pointer; }
+.g-cell.on:hover { background: color-mix(in srgb, var(--rubric) 14%, transparent); }
+
+.g-mark {
+  display: inline-block;
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  font-size: var(--t-xs);
+  color: var(--rubric);
+  line-height: 1.9;
+}
+
+.grid-note {
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  margin: 0.625rem 0 0;
+}
+
+@media (max-width: 44rem) {
+  .grid-wrap { padding: 1.5rem 1rem 4rem; }
+  .g-corner, .g-row { min-width: 9rem; }
+}
