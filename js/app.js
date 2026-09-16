@@ -822,6 +822,7 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
   $('scene').hidden = true;
   $('readview').hidden = false;
   $('timeline-wrap').hidden = true;
+  $('grid-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'true');
 
   await renderReadView();
@@ -1253,6 +1254,7 @@ async function openScene(id) {
   $('event-edit').hidden = true;
   $('readview').hidden = true;
   $('timeline-wrap').hidden = true;
+  $('grid-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
@@ -1725,6 +1727,7 @@ function railSection(name) {
     b.setAttribute('aria-selected', String(b.dataset.section === name));
   $('toc').hidden         = name !== 'manuscript';
   $('card-list').hidden   = name !== 'cards';
+  $('card-tools').hidden  = name !== 'cards';
   $('event-list').hidden  = name !== 'events';
   $('ev-filter').hidden   = name !== 'events';
   saveLocal();
@@ -1818,6 +1821,7 @@ async function openCard(id) {
   $('scene').hidden = true;
   $('event-edit').hidden = true;
   $('timeline-wrap').hidden = true;
+  $('grid-wrap').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2154,7 +2158,8 @@ async function openEvent(id) {
   App.activeCard = null;
   App.view = 'edit';
 
-  for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap']) $(h).hidden = true;
+  for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap', 'grid-wrap'])
+    $(h).hidden = true;
   $('event-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -3075,9 +3080,142 @@ async function openTimeline() {
   App.view = 'timeline';
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'empty']) $(id).hidden = true;
   $('timeline-wrap').hidden = false;
+  $('grid-wrap').hidden = true;
   hideTlTip();
   $('tally').textContent = '';
   await renderTimeline();
+}
+
+// ══ Grid ═══════════════════════════════════════════════════════════
+//
+// Scenes down, cards across, a mark where a scene links a card. The
+// answer to "who is in this chapter" and "where does she disappear for
+// forty pages" at a glance.
+//
+// DERIVED, NOT MAINTAINED. Wavemaker and Scrivener both make you tag
+// scenes by hand, which means the grid is only ever as current as your
+// last tagging session. Here the marks come from [[links]] in the prose
+// itself, so a grid can't drift out of date — writing someone into a
+// scene IS the act of putting them in the grid.
+//
+// Built as a table rather than SVG: sticky headers, text selection and
+// keyboard navigation all come free, and the content is genuinely
+// tabular.
+
+const gridFilter = { type: 'character' };
+
+async function renderGrid() {
+  const host = $('grid');
+  host.replaceChildren();
+
+  const [graph, cards] = await Promise.all([
+    RecordStore.linkGraph(), RecordStore.getAll('card'),
+  ]);
+
+  // Columns: cards of the chosen type that appear at least once. A
+  // column of empty cells is noise — the card list is where you go to
+  // see everyone.
+  const used = new Set(Object.keys(graph.byCard));
+  const cols = Object.values(cards)
+    .filter(c => used.has(c.id))
+    .filter(c => gridFilter.type === 'all' || c.cardType === gridFilter.type)
+    .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
+
+  // Rows: every scene in reading order, including ones with no links.
+  // An empty row is the useful signal here — a scene nobody appears in
+  // is worth noticing.
+  const rows = [];
+  for (const ch of RecordStore.allChapters(App.tree || { works: [] })) {
+    for (const sc of ch.scenes) rows.push({ ...sc, chapter: ch.title });
+  }
+  for (const sc of (App.tree?.unfiled || [])) rows.push({ ...sc, chapter: null });
+
+  if (!cols.length || !rows.length) {
+    host.append(el('p', 'rv-empty', cols.length
+      ? 'No scenes yet.'
+      : 'Nothing linked yet. Write [[a card name]] in a scene and it appears here.'));
+    return;
+  }
+
+  const table = el('table', 'grid-table');
+
+  const thead = el('thead');
+  const hr = el('tr');
+  hr.append(el('th', 'g-corner', 'Scene'));
+  hr.append(el('th', 'g-words', 'Words'));
+  for (const c of cols) {
+    const th = el('th', 'g-col');
+    const btn = el('button', 'g-col-btn', c.name);
+    btn.addEventListener('click', () => { railSection('cards'); openCard(c.id); });
+    th.append(btn);
+    hr.append(th);
+  }
+  thead.append(hr);
+  table.append(thead);
+
+  const tbody = el('tbody');
+  let lastChapter;
+  for (const sc of rows) {
+    if (sc.chapter !== lastChapter) {
+      lastChapter = sc.chapter;
+      const br = el('tr', 'g-chapter-row');
+      const td = el('td', 'g-chapter');
+      td.colSpan = cols.length + 2;
+      td.textContent = sc.chapter || 'Unplaced';
+      br.append(td);
+      tbody.append(br);
+    }
+
+    const tr = el('tr');
+    const nameCell = el('th', 'g-row');
+    const nameBtn = el('button', 'g-row-btn', sc.title || 'Untitled');
+    nameBtn.addEventListener('click', () => { railSection('manuscript'); openScene(sc.id); });
+    nameCell.append(nameBtn);
+    tr.append(nameCell);
+
+    tr.append(el('td', 'g-words', fmtWords(sc.wordCount)));
+
+    const links = Object.fromEntries((graph.byScene[sc.id] || []).map(l => [l.cardId, l.count]));
+    for (const c of cols) {
+      const td = el('td', 'g-cell');
+      const n = links[c.id];
+      if (n) {
+        td.classList.add('on');
+        // The count matters: one mention and a whole scene built around
+        // someone look identical otherwise.
+        td.append(el('span', 'g-mark', n > 1 ? String(n) : '\u25CF'));
+        td.title = `${c.name} in ${sc.title} (${n} mention${n === 1 ? '' : 's'})`;
+        td.addEventListener('click', () => { railSection('manuscript'); openScene(sc.id); });
+      }
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+
+  table.append(tbody);
+  host.append(table);
+
+  const totals = el('p', 'grid-note');
+  totals.textContent = `${rows.length} scenes \u00D7 ${cols.length} cards`;
+  if (graph.unknown.size) {
+    // Unresolved links are usually typos or people not written up yet.
+    // Surfacing the count here is the only place they're visible.
+    totals.textContent += ` \u2014 ${graph.unknown.size} unresolved link${graph.unknown.size === 1 ? '' : 's'}`;
+  }
+  host.append(totals);
+}
+
+async function openGrid() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.view = 'grid';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap', 'empty'])
+    $(id).hidden = true;
+  $('grid-wrap').hidden = false;
+  $('tally').textContent = '';
+  await renderGrid();
 }
 
 // ── Responsive mode ────────────────────────────────────────────────
@@ -3263,6 +3401,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (App.view === 'timeline') renderTimeline();
   });
   $('btn-timeline').addEventListener('click', openTimeline);
+  $('btn-grid').addEventListener('click', openGrid);
+  for (const b of document.querySelectorAll('.grid-types button')) {
+    b.addEventListener('click', () => {
+      gridFilter.type = b.dataset.type;
+      for (const o of document.querySelectorAll('.grid-types button'))
+        o.setAttribute('aria-pressed', String(o === b));
+      renderGrid();
+    });
+  }
   $('tl-in').addEventListener('click', () => { App.tlZoom = Math.min(App.tlZoom * 1.6, 60); renderTimeline(); });
   $('tl-out').addEventListener('click', () => { App.tlZoom = Math.max(App.tlZoom / 1.6, 1); renderTimeline(); });
   $('tl-fit').addEventListener('click', () => { App.tlZoom = 1; renderTimeline(); });
