@@ -659,6 +659,105 @@ const RecordStore = (() => {
     return (await buildCardIndex()).get((target || '').trim().toLowerCase()) || null;
   }
 
+  // ══ Search ═══════════════════════════════════════════════════════
+  //
+  // One pass over everything: scene titles, synopses and prose, card
+  // names, aliases, fields and notes, event titles and notes.
+  //
+  // No index is maintained. At novel scale — a few hundred records,
+  // maybe a megabyte of text — a linear scan is a few milliseconds, and
+  // an index would be one more thing that can silently fall out of step
+  // with the records it describes.
+
+  // A snippet of the text around the first hit, with the match marked.
+  // Returning the whole body would make every result look the same; the
+  // point is to see the sentence, not the scene.
+  function snippet(text, needle, width = 90) {
+    if (!text) return null;
+    const i = text.toLowerCase().indexOf(needle);
+    if (i === -1) return null;
+
+    const start = Math.max(0, i - Math.floor(width / 3));
+    const end = Math.min(text.length, i + needle.length + Math.floor(width * 2 / 3));
+    let out = text.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start > 0) out = '…' + out;
+    if (end < text.length) out += '…';
+
+    return { text: out, at: out.toLowerCase().indexOf(needle), len: needle.length };
+  }
+
+  /**
+   * search(query) → [{ type, id, title, context, snippet, score }]
+   *
+   * Ranked, because an unranked list of everything containing "angel"
+   * is barely better than no search. A title match beats a body match;
+   * a whole-word match beats a fragment. Ties break on recency, so the
+   * thing you were last working on surfaces first.
+   */
+  async function search(query, { limit = 40 } = {}) {
+    const q = (query || '').trim().toLowerCase();
+    if (q.length < 2) return [];
+
+    const word = new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+    const results = [];
+
+    const consider = (type, id, title, context, fields) => {
+      let score = 0, snip = null;
+      for (const [weight, value] of fields) {
+        const v = String(value || '');
+        if (!v) continue;
+        const lower = v.toLowerCase();
+        if (!lower.includes(q)) continue;
+        // A match at a word boundary is worth more than one buried
+        // inside another word — "angel" in "Angel Six" beats "angel"
+        // in "evangelical".
+        score = Math.max(score, weight * (word.test(v) ? 2 : 1));
+        if (!snip) snip = snippet(v, q);
+      }
+      if (score) results.push({ type, id, title, context, snippet: snip, score });
+    };
+
+    const [books, parts, chapters, scenes, cards, events] = await Promise.all([
+      getAll('book'), getAll('part'), getAll('chapter'),
+      getAll('scene'), getAll('card'), getAll('event'),
+    ]);
+
+    // Chapter titles, so a scene result can say where it lives.
+    const chapterOf = {};
+    for (const c of Object.values(chapters)) chapterOf[c.id] = c.title;
+
+    for (const b of Object.values(books))
+      consider('book', b.id, b.title, 'Book', [[10, b.title]]);
+
+    for (const p of Object.values(parts))
+      consider('part', p.id, p.title, 'Part', [[9, p.title]]);
+
+    for (const c of Object.values(chapters))
+      consider('chapter', c.id, c.title, 'Chapter', [[9, c.title], [4, c.synopsis]]);
+
+    for (const sc of Object.values(scenes))
+      consider('scene', sc.id, sc.title || 'Untitled scene',
+        chapterOf[sc.chapterId] || 'Unplaced',
+        [[10, sc.title], [6, sc.synopsis], [5, sc.pov], [3, sc.body]]);
+
+    for (const c of Object.values(cards))
+      consider('card', c.id, c.name || 'Untitled', c.cardType,
+        [[10, c.name], [8, (c.aka || []).join(' ')], [5, (c.tags || []).join(' ')],
+         [4, Object.entries(c.fields || {}).map(([k, v]) => `${k} ${v}`).join(' ')],
+         [3, c.body]]);
+
+    for (const e of Object.values(events))
+      consider('event', e.id, e.title || 'Untitled event', e.kind || 'event',
+        [[10, e.title], [5, e.location], [3, e.body]]);
+
+    const stamp = { scene: scenes, card: cards, event: events,
+                    chapter: chapters, part: parts, book: books };
+    return results
+      .sort((a, b) => b.score - a.score ||
+        ((stamp[b.type]?.[b.id]?.updatedAt || 0) - (stamp[a.type]?.[a.id]?.updatedAt || 0)))
+      .slice(0, limit);
+  }
+
   // ── Sync interface ────────────────────────────────────────────────
   // Exactly the config shape sync.js expects. Pass this into Sync.init().
 
@@ -793,6 +892,7 @@ const RecordStore = (() => {
     createEvent, getTimeline, eventsForCard, PRECISIONS,
     // Helpers
     countWords, nextOrder, sortByOrder, newId, TYPES,
+    search,
     // Wiring
     syncInterface,
     importRecords,

@@ -3389,6 +3389,135 @@ function offerUpdate() {
   document.body.append(bar);
 }
 
+// ══ Search ═════════════════════════════════════════════════════════
+//
+// One box over everything: scenes, cards, events, chapters. Opens on
+// Ctrl/Cmd-K, which is where a decade of other tools have trained
+// everyone's hands to reach.
+//
+// Results are a palette, not a page: arrow keys move, Enter opens, and
+// the whole thing closes on the way. Sending you to a separate results
+// screen would mean two navigations to read one sentence.
+
+let _searchTimer = null;
+let _searchResults = [];
+let _searchIndex = 0;
+
+function openSearch() {
+  $('search-overlay').hidden = false;
+  const box = $('search-input');
+  box.value = '';
+  box.focus();
+  $('search-results').replaceChildren();
+  $('search-hint').textContent = 'Scenes, cards, events — anything with words in it.';
+  _searchResults = [];
+  _searchIndex = 0;
+}
+
+function closeSearch() {
+  $('search-overlay').hidden = true;
+  clearTimeout(_searchTimer);
+}
+
+function scheduleSearch() {
+  clearTimeout(_searchTimer);
+  // Short debounce: the scan is fast, but running it on every keystroke
+  // of a long word is work nobody sees the result of.
+  _searchTimer = setTimeout(runSearch, 140);
+}
+
+const SEARCH_ICON = {
+  scene: '\u00B6', card: '\u25C6', event: '\u2022',
+  chapter: '\u00A7', part: '\u2016', book: '\u25A0',
+};
+
+async function runSearch() {
+  const q = $('search-input').value.trim();
+  const list = $('search-results');
+  const hint = $('search-hint');
+
+  if (q.length < 2) {
+    list.replaceChildren();
+    hint.textContent = 'Keep typing — two letters or more.';
+    _searchResults = [];
+    return;
+  }
+
+  // The prose is the source of truth, so anything unsaved has to be
+  // written before it can be found. Searching and not finding the
+  // sentence you just typed would be a bad first impression.
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  _searchResults = await RecordStore.search(q);
+  _searchIndex = 0;
+
+  list.replaceChildren();
+  if (!_searchResults.length) {
+    hint.textContent = `Nothing for "${q}".`;
+    return;
+  }
+  hint.textContent = `${_searchResults.length} result${_searchResults.length === 1 ? '' : 's'}`;
+
+  _searchResults.forEach((r, i) => {
+    const row = el('button', 'sr' + (i === _searchIndex ? ' on' : ''));
+    row.append(el('span', 'sr-icon', SEARCH_ICON[r.type] || '\u00B7'));
+
+    const main = el('span', 'sr-main');
+    main.append(el('span', 'sr-title', r.title));
+    if (r.snippet) {
+      // Mark the match in place rather than rewriting the sentence
+      // around it — you should see the line as it's actually written.
+      const s = el('span', 'sr-snip');
+      const { text, at, len } = r.snippet;
+      if (at >= 0) {
+        s.append(document.createTextNode(text.slice(0, at)));
+        s.append(el('mark', null, text.slice(at, at + len)));
+        s.append(document.createTextNode(text.slice(at + len)));
+      } else {
+        s.textContent = text;
+      }
+      main.append(s);
+    }
+    row.append(main);
+    row.append(el('span', 'sr-where', r.context || r.type));
+
+    row.addEventListener('click', () => openResult(r));
+    row.addEventListener('mouseenter', () => { _searchIndex = i; paintSearchSelection(); });
+    list.append(row);
+  });
+}
+
+function paintSearchSelection() {
+  const rows = [...$('search-results').children];
+  rows.forEach((r, i) => r.classList.toggle('on', i === _searchIndex));
+  rows[_searchIndex]?.scrollIntoView({ block: 'nearest' });
+}
+
+async function openResult(r) {
+  closeSearch();
+  if (r.type === 'scene')  { railSection('manuscript'); return openScene(r.id); }
+  if (r.type === 'card')   { railSection('cards');      return openCard(r.id); }
+  if (r.type === 'event')  { railSection('events');     return openEvent(r.id); }
+  // Containers have no editor of their own — reading them is the
+  // closest thing to opening them.
+  railSection('manuscript');
+  if (r.type === 'chapter') return openRead({ kind: 'chapter', id: r.id });
+  if (r.type === 'part')    return openRead({ kind: 'part', id: r.id });
+  if (r.type === 'book')    return openRead({ kind: 'book', id: r.id });
+}
+
+function searchKey(e) {
+  if ($('search-overlay').hidden) return false;
+  if (e.key === 'Escape')    { closeSearch(); return true; }
+  if (!_searchResults.length) return false;
+  if (e.key === 'ArrowDown') { _searchIndex = (_searchIndex + 1) % _searchResults.length; paintSearchSelection(); return true; }
+  if (e.key === 'ArrowUp')   { _searchIndex = (_searchIndex - 1 + _searchResults.length) % _searchResults.length; paintSearchSelection(); return true; }
+  if (e.key === 'Enter')     { openResult(_searchResults[_searchIndex]); return true; }
+  return false;
+}
+
 // ── Responsive mode ────────────────────────────────────────────────
 
 function applyMode() {
@@ -3564,6 +3693,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, { passive: true });
   $('scrim').addEventListener('click', closeRail);
   $('btn-settings').addEventListener('click', openSettings);
+  $('btn-search').addEventListener('click', openSearch);
+  $('search-input').addEventListener('input', scheduleSearch);
+  $('search-overlay').addEventListener('mousedown', e => {
+    if (e.target === $('search-overlay')) closeSearch();
+  });
   $('settings-close').addEventListener('click', () => closeModal('modal-settings'));
 
 
@@ -3748,6 +3882,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (id) { e.preventDefault(); editFromRead(id); }
     }
   });
+
+  // Ctrl/Cmd-K opens search — where a decade of other tools have
+  // trained everyone's hands to reach. Captured, so it works from
+  // inside the editor too.
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      $('search-overlay').hidden ? openSearch() : closeSearch();
+      return;
+    }
+    if (searchKey(e)) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
 
   // Esc closes the topmost open modal.
   document.addEventListener('keydown', e => {
