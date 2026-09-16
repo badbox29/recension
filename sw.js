@@ -41,7 +41,7 @@
  * the network returns.
  */
 
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v2';
 const CACHE = `recension-${SW_VERSION}`;
 const FONT_CACHE = 'recension-fonts';
 
@@ -105,6 +105,25 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(req.url);
 
+  // Fonts FIRST. They live on googleapis.com and gstatic.com, so the
+  // Google exclusion below would otherwise swallow them and Spectral
+  // would stop being cached at all.
+  if (FONT_HOSTS.includes(url.hostname)) {
+    event.respondWith(cacheFirst(req, FONT_CACHE));
+    return;
+  }
+
+  // Google's sign-in machinery is never touched. Its scripts, iframes
+  // and redirects are stateful and time-sensitive; anything served from
+  // a cache here breaks the flow in ways that surface as a white page
+  // rather than an error.
+  if (url.hostname.endsWith('google.com') ||
+      url.hostname.endsWith('googleapis.com') ||
+      url.hostname.endsWith('googleusercontent.com') ||
+      url.hostname.endsWith('gstatic.com')) {
+    return;
+  }
+
   // Sync traffic is never cached — see the header note.
   if (url.hostname.endsWith('workers.dev') ||
       url.pathname.startsWith('/storage') ||
@@ -113,12 +132,12 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  if (FONT_HOSTS.includes(url.hostname)) {
-    event.respondWith(cacheFirst(req, FONT_CACHE));
-    return;
-  }
-
-  if (req.mode === 'navigate') {
+  // Only OUR OWN navigations. A cross-origin navigation — the Google
+  // sign-in flow being the one that matters — must be left entirely
+  // alone: falling back to a cached ./index.html for a request bound
+  // for accounts.google.com would hand back the wrong app's HTML and
+  // leave a blank, frozen window with no way out.
+  if (req.mode === 'navigate' && url.origin === self.location.origin) {
     event.respondWith(networkFirst(req));
     return;
   }
