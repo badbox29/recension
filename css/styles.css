@@ -36,6 +36,21 @@
   --rubric:     #9E2A2B;
   --rubric-dim: #B9686A;
 
+  /* Event kinds. Nine categories need nine colours, which is the one
+     place this design admits more than its single accent — so they are
+     kept low-chroma and earthy rather than a spectrum of primaries, and
+     they appear ONLY on the timeline. Death takes the rubric itself;
+     everything else is tuned to sit beside it without competing. */
+  --k-birth:     #4C6B54;
+  --k-death:     #9E2A2B;
+  --k-marriage:  #9A6B2C;
+  --k-divorce:   #7A5C7E;
+  --k-meeting:   #3F6280;
+  --k-conflict:  #A0522D;
+  --k-journey:   #47756F;
+  --k-discovery: #6B7A3F;
+  --k-other:     #6B7079;
+
   /* Type */
   --prose: "Spectral", Iowan Old Style, Palatino, Georgia, serif;
   --chrome: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -64,6 +79,18 @@ html.dark {
   --rule-soft: #24272D;
   --rubric:     #CB6266;
   --rubric-dim: #8E4446;
+
+  /* Lifted and slightly desaturated for a dark ground — the light-mode
+     values go muddy against near-black. */
+  --k-birth:     #7FAE8A;
+  --k-death:     #CB6266;
+  --k-marriage:  #D3A05A;
+  --k-divorce:   #AE92B2;
+  --k-meeting:   #7BA3C6;
+  --k-conflict:  #D08256;
+  --k-journey:   #7FB3AC;
+  --k-discovery: #A8B770;
+  --k-other:     #9398A0;
   --focus: #6FA0D0;
 }
 
@@ -1741,11 +1768,54 @@ a.wl.unknown {
 .tl-tip-k { color: var(--ink-faint); width: 3rem; flex: none; }
 .tl-tip-v { color: var(--ink-soft); }
 
-/* Beginnings and endings are the two that matter at a glance. */
-.tl-dot.k-birth,    .tl-band.k-birth    { fill: var(--ink); }
-.tl-dot.k-death,    .tl-band.k-death    { fill: var(--rubric); }
-.tl-dot.k-marriage, .tl-band.k-marriage { fill: var(--rubric-dim); }
-.tl-dot.k-conflict, .tl-band.k-conflict { fill: var(--rubric-dim); }
+.tl-dot.k-birth,     .tl-band.k-birth     { fill: var(--k-birth); }
+.tl-dot.k-death,     .tl-band.k-death     { fill: var(--k-death); }
+.tl-dot.k-marriage,  .tl-band.k-marriage  { fill: var(--k-marriage); }
+.tl-dot.k-divorce,   .tl-band.k-divorce   { fill: var(--k-divorce); }
+.tl-dot.k-meeting,   .tl-band.k-meeting   { fill: var(--k-meeting); }
+.tl-dot.k-conflict,  .tl-band.k-conflict  { fill: var(--k-conflict); }
+.tl-dot.k-journey,   .tl-band.k-journey   { fill: var(--k-journey); }
+.tl-dot.k-discovery, .tl-band.k-discovery { fill: var(--k-discovery); }
+.tl-dot.k-other,     .tl-band.k-other     { fill: var(--k-other); }
+
+/* ── Legend ────────────────────────────────────────────────────── */
+/* Doubles as a filter. A legend that only explains is a missed
+   opportunity when the thing it names is also the thing you want to
+   isolate. */
+
+.tl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.375rem;
+  margin: -0.75rem 0 1.25rem;
+}
+
+.tl-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem 0.125rem 0.375rem;
+  cursor: pointer;
+}
+.tl-key:hover { border-color: var(--rule); color: var(--ink); }
+.tl-key[aria-pressed="true"] { border-color: var(--rule); background: var(--paper); color: var(--ink); }
+
+/* A kind with nothing in view is shown but dimmed — the palette stays
+   legible as a whole, and an empty category is information too. */
+.tl-key.empty { opacity: .35; cursor: default; }
+.tl-key.empty:hover { border-color: transparent; color: var(--ink-soft); }
+
+.tl-swatch { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex: none; }
+.tl-key-n {
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  color: var(--ink-faint);
+}
 
 @media (max-width: 44rem) {
   .timeline-wrap { padding: 1.5rem 1rem 4rem; }
