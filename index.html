@@ -22,7 +22,7 @@
      app.js. The ?v= on each asset is what forces a fresh fetch, so if you
      change a file and don't change this number, the change may not reach
      your phone at all. Keep the number the same across all five. -->
-<link rel="stylesheet" href="css/styles.css?v=30" />
+<link rel="stylesheet" href="css/styles.css?v=31" />
 
 <!-- Applied before first paint so the page never flashes light then dark. -->
 <script>try{if(JSON.parse(localStorage.getItem('rec_darkMode')))document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -73,6 +73,9 @@
 
     </div>
     <div class="toc" id="toc"></div>
+    <div class="card-tools" id="card-tools" hidden>
+      <button class="ghost-btn" id="btn-grid">Grid</button>
+    </div>
     <div class="toc" id="card-list" hidden></div>
     <!-- Event filters. Chronology is the only grouping — filtering
          preserves it, where grouping by participant or kind would
@@ -250,6 +253,21 @@
                   placeholder="What happened, and why it matters."></textarea>
       </div>
     </article>
+
+    <!-- Grid. Scenes down, cards across, derived from the links in the
+         prose rather than from tags maintained by hand. -->
+    <section class="grid-wrap" id="grid-wrap" hidden aria-label="Scene grid">
+      <header class="tl-head">
+        <h1>Grid</h1>
+        <div class="grid-types tl-zoom" role="group" aria-label="Card type">
+          <button data-type="character" aria-pressed="true">People</button>
+          <button data-type="location" aria-pressed="false">Places</button>
+          <button data-type="faction" aria-pressed="false">Factions</button>
+          <button data-type="all" aria-pressed="false">All</button>
+        </div>
+      </header>
+      <div class="grid-scroll" id="grid"></div>
+    </section>
 
     <!-- Timeline. A lane per person, time across the page — the view
          that makes events worth being records rather than scene tags. -->
@@ -492,9 +510,9 @@
 
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
-<script src="js/auth.js?v=30"></script>
-<script src="js/recordStore.js?v=30"></script>
-<script src="js/sync.js?v=30"></script>
-<script src="js/app.js?v=30"></script>
+<script src="js/auth.js?v=31"></script>
+<script src="js/recordStore.js?v=31"></script>
+<script src="js/sync.js?v=31"></script>
+<script src="js/app.js?v=31"></script>
 </body>
 </html>
