@@ -2014,9 +2014,10 @@ function formatWhen(iso, precision) {
 
 // Filter state. Per-device and per-session: which slice of the timeline
 // you're looking at is a reading position, not a fact about the book.
-const evFilter = { who: '', where: 'all' };
+const evFilter = { who: '', where: 'all', kind: null };
 
 function eventMatches(e) {
+  if (evFilter.kind && (e.kind || 'other') !== evFilter.kind) return false;
   if (evFilter.who && !(e.participants || []).includes(evFilter.who)) return false;
   if (evFilter.where === 'shown' && !e.sceneRef) return false;
   if (evFilter.where === 'off'   &&  e.sceneRef) return false;
@@ -2040,7 +2041,8 @@ async function renderEvents() {
   }
 
   if (!events.length) {
-    list.append(el('p', 'rail-hint', 'Nothing matches that filter.'));
+    list.append(el('p', 'rail-hint',
+      evFilter.kind ? `No ${evFilter.kind} events match.` : 'Nothing matches that filter.'));
     list.append(addEventLink());
     return;
   }
@@ -2779,6 +2781,9 @@ function spanYears(precision) {
   return { year: 1, month: 1 / 12, day: 1 / 365, minute: 0 }[precision] ?? 1 / 365;
 }
 
+const EVENT_KINDS = ['birth', 'death', 'marriage', 'divorce', 'meeting',
+                     'conflict', 'journey', 'discovery', 'other'];
+
 const TL = {
   laneH: 30, padTop: 34, padLeft: 150, padRight: 24, minPxPerYear: 8,
 };
@@ -2945,6 +2950,48 @@ async function renderTimeline() {
   });
 
   host.append(svg);
+  renderLegend(Object.values(allEvents).filter(e => toYear(e.start) !== null));
+}
+
+/**
+ * renderLegend(events) — the colour key, which doubles as a filter.
+ *
+ * A legend that only explains is a missed opportunity when the thing it
+ * names is also the thing you want to isolate. Clicking a kind shows
+ * only that kind; clicking it again clears it.
+ *
+ * Kinds with nothing in view are shown dimmed rather than hidden: the
+ * palette stays legible as a whole, and "no divorces in this book" is
+ * information too.
+ */
+function renderLegend(events) {
+  const box = $('tl-legend');
+  box.replaceChildren();
+
+  const counts = {};
+  for (const e of events) counts[e.kind || 'other'] = (counts[e.kind || 'other'] || 0) + 1;
+
+  for (const kind of EVENT_KINDS) {
+    const n = counts[kind] || 0;
+    const on = evFilter.kind === kind;
+
+    const b = el('button', 'tl-key' + (n ? '' : ' empty'));
+    b.setAttribute('aria-pressed', String(on));
+    b.disabled = !n;
+
+    const dot = el('span', 'tl-swatch');
+    dot.style.background = `var(--k-${kind})`;
+    b.append(dot);
+    b.append(el('span', null, kind[0].toUpperCase() + kind.slice(1)));
+    if (n) b.append(el('span', 'tl-key-n', String(n)));
+
+    b.addEventListener('click', () => {
+      evFilter.kind = on ? null : kind;
+      renderTimeline();
+      renderEvents();
+    });
+    box.append(b);
+  }
 }
 
 // ── Tooltip ────────────────────────────────────────────────────────
