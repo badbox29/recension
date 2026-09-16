@@ -2004,3 +2004,8 @@ thead .g-words { z-index: 2; }
   .grid-wrap { padding: 1.5rem 1rem 4rem; }
   .g-corner, .g-row { min-width: 9rem; }
 }
+
+/* Storage status. The unprotected state is stated plainly rather than
+   dressed up — it's a real risk, and a reassuring grey line would be
+   worse than saying nothing. */
+.note.bad { color: var(--rubric); }
