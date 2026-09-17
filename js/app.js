@@ -1616,6 +1616,333 @@ async function compileText(scope = { kind: 'all', id: null }) {
   return parts.join('\n') + '\n';
 }
 
+// ══ Manuscript formats ═════════════════════════════════════════════
+//
+// .docx and .epub are both ZIPs of XML, and fflate is already here for
+// the backup — so neither needs a library. A docx generator is ~600KB
+// of dependency to write a few kilobytes of markup we can write
+// ourselves, and it would have to be vendored for offline use.
+//
+// The docx follows Shunn standard manuscript format: Times New Roman
+// 12pt, double-spaced, one-inch margins, half-inch first-line indents,
+// a running header of SURNAME / TITLE / page. Not a style choice —
+// it's what agents and editors expect, and deviating from it is the
+// kind of small friction that makes a submission look amateur.
+
+function xmlEsc(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+// Markdown emphasis → runs. Deliberately minimal: prose uses italics
+// and the occasional bold, and a full parser would be a lot of code to
+// support syntax that shouldn't appear in a manuscript anyway.
+function inlineRuns(text, { font = 'Times New Roman', size = 24 } = {}) {
+  const parts = [];
+  const re = /(\*\*|__)(.+?)\1|(\*|_)(.+?)\3/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push({ t: text.slice(last, m.index) });
+    if (m[2] !== undefined) parts.push({ t: m[2], b: true });
+    else parts.push({ t: m[4], i: true });
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push({ t: text.slice(last) });
+  if (!parts.length) parts.push({ t: '' });
+
+  return parts.map(p => {
+    const props = [`<w:rFonts w:ascii="${font}" w:hAnsi="${font}"/>`, `<w:sz w:val="${size}"/>`];
+    if (p.b) props.push('<w:b/>');
+    if (p.i) props.push('<w:i/>');
+    return `<w:r><w:rPr>${props.join('')}</w:rPr>` +
+           `<w:t xml:space="preserve">${xmlEsc(p.t)}</w:t></w:r>`;
+  }).join('');
+}
+
+function para(text, { align = 'left', indent = 720, spaceBefore = 0,
+                      pageBreak = false, size = 24, bold = false } = {}) {
+  const pPr = [];
+  if (pageBreak) pPr.push('<w:pageBreakBefore/>');
+  // Double spacing throughout, as the format requires.
+  pPr.push('<w:spacing w:line="480" w:lineRule="auto" w:before="' + spaceBefore + '" w:after="0"/>');
+  if (indent) pPr.push(`<w:ind w:firstLine="${indent}"/>`);
+  if (align !== 'left') pPr.push(`<w:jc w:val="${align}"/>`);
+  const body = bold
+    ? `<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="${size}"/><w:b/></w:rPr><w:t xml:space="preserve">${xmlEsc(text)}</w:t></w:r>`
+    : inlineRuns(text, { size });
+  return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${body}</w:p>`;
+}
+
+async function buildDocx(scope) {
+  const scenes = scenesInScope(scope);
+  const title = manuscriptTitle(scope);
+  const words = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+  const au = App.data.author || {};
+  const legal = [au.first, au.middle, au.last].filter(Boolean).join(' ');
+  const byline = authorByline();
+  const surname = au.last || (byline || 'Author').split(/\s+/).pop();
+
+  const body = [];
+
+  // ── Title page ──
+  // Contact block flush left at the top, title a third of the way
+  // down, word count with the byline. Straight out of the format.
+  for (const line of [legal, ...(au.address || '').split('\n'), au.phone, au.email]
+        .map(s => (s || '').trim()).filter(Boolean)) {
+    body.push(para(line, { indent: 0 }));
+  }
+  if (au.agent) {
+    body.push(para('', { indent: 0 }));
+    body.push(para(`Represented by ${au.agent}`, { indent: 0 }));
+    if (au.agentContact) body.push(para(au.agentContact, { indent: 0 }));
+  }
+  for (let i = 0; i < 6; i++) body.push(para('', { indent: 0 }));
+  body.push(para(title.toUpperCase(), { align: 'center', indent: 0, bold: true }));
+  body.push(para('', { indent: 0 }));
+  if (byline) body.push(para(`by ${byline}`, { align: 'center', indent: 0 }));
+  body.push(para('', { indent: 0 }));
+  // Manuscript word counts are conventionally rounded.
+  body.push(para(`about ${(Math.round(words / 100) * 100).toLocaleString()} words`,
+    { align: 'center', indent: 0 }));
+
+  // ── Text ──
+  let lastChapter, firstChapter = true;
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+
+    if (meta.chapterId !== lastChapter) {
+      lastChapter = meta.chapterId;
+      if (meta.chapterTitle) {
+        // Every chapter starts a new page, a third of the way down.
+        body.push(para(meta.chapterTitle.toUpperCase(),
+          { align: 'center', indent: 0, pageBreak: true, spaceBefore: 2880 }));
+        body.push(para('', { indent: 0 }));
+      } else if (!firstChapter) {
+        body.push(para('#', { align: 'center', indent: 0 }));
+      }
+      firstChapter = false;
+    } else {
+      // Scene break inside a chapter: a centred hash, the conventional
+      // typescript mark.
+      body.push(para('#', { align: 'center', indent: 0 }));
+    }
+
+    const text = stripWikilinks((rec.body || '').trim());
+    for (const block of text.split(/\n{2,}/)) {
+      const t = block.trim();
+      if (!t) continue;
+      // A markdown heading inside a scene becomes a centred line —
+      // manuscripts have no h2.
+      const h = t.match(/^#{1,6}\s+(.*)$/s);
+      if (h) { body.push(para(h[1], { align: 'center', indent: 0 })); continue; }
+      body.push(para(t.replace(/\n/g, ' ')));
+    }
+  }
+
+  const header = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:pPr><w:jc w:val="right"/><w:spacing w:line="240" w:lineRule="auto"/></w:pPr>
+<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="24"/></w:rPr>
+<w:t xml:space="preserve">${xmlEsc(surname)} / ${xmlEsc(title)} / </w:t></w:r>
+<w:fldSimple w:instr="PAGE"><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple>
+</w:p></w:hdr>`;
+
+  const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>${body.join('')}
+<w:sectPr>
+<w:headerReference w:type="default" r:id="rId10"/>
+<w:pgSz w:w="12240" w:h="15840"/>
+<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"
+         w:header="720" w:footer="720" w:gutter="0"/>
+<w:titlePg/>
+</w:sectPr></w:body></w:document>`;
+
+  const files = {
+    'mimetype': fflate.strToU8('application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    '[Content_Types].xml': fflate.strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+</Types>`),
+    '_rels/.rels': fflate.strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`),
+    'word/_rels/document.xml.rels': fflate.strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>`),
+    'word/header1.xml': fflate.strToU8(header),
+    'word/document.xml': fflate.strToU8(document),
+  };
+  // The mimetype entry must be stored, not deflated.
+  delete files['mimetype'];
+
+  return fflate.zipSync(files, { level: 6 });
+}
+
+// ── EPUB ───────────────────────────────────────────────────────────
+//
+// For reading your own draft on a phone or an e-reader, which catches
+// things the editor never will — pacing, repetition, a chapter that
+// ends flat. One XHTML file per chapter, so the reader can page and
+// bookmark properly.
+
+function xhtmlChapter(title, paras) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>${xmlEsc(title)}</title>
+<link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body><section epub:type="chapter">
+<h1>${xmlEsc(title)}</h1>
+${paras}
+</section></body></html>`;
+}
+
+async function buildEpub(scope) {
+  const scenes = scenesInScope(scope);
+  const title = manuscriptTitle(scope);
+  const byline = authorByline() || 'Unknown';
+  const uid = `urn:uuid:${(crypto.randomUUID?.() || Date.now().toString(36))}`;
+
+  // Group into chapters — an ebook with one file per scene would give
+  // a table of contents nobody wants to scroll.
+  const chapters = [];
+  let current = null;
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    const name = meta.chapterTitle || 'Unplaced';
+    if (!current || current.title !== name) {
+      current = { title: name, html: [] };
+      chapters.push(current);
+    } else {
+      current.html.push('<p class="break">#</p>');
+    }
+    const text = stripWikilinks((rec.body || '').trim());
+    for (const block of text.split(/\n{2,}/)) {
+      const t = block.trim();
+      if (!t) continue;
+      const h = t.match(/^#{1,6}\s+(.*)$/s);
+      if (h) { current.html.push(`<h2>${xmlEsc(h[1])}</h2>`); continue; }
+      const inline = xmlEsc(t.replace(/\n/g, ' '))
+        .replace(/(\*\*|__)(.+?)\1/g, '<strong>$2</strong>')
+        .replace(/(\*|_)(.+?)\1/g, '<em>$2</em>');
+      current.html.push(`<p>${inline}</p>`);
+    }
+  }
+
+  const files = {};
+  const put = (name, text) => { files[name] = fflate.strToU8(text); };
+
+  put('META-INF/container.xml', `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="OEBPS/content.opf"
+ media-type="application/oebps-package+xml"/></rootfiles></container>`);
+
+  put('OEBPS/style.css', `body { font-family: Georgia, serif; line-height: 1.6; margin: 1em; }
+h1 { font-size: 1.3em; margin: 2em 0 1.2em; text-align: center; font-weight: normal;
+     letter-spacing: .08em; text-transform: uppercase; }
+h2 { font-size: 1.05em; text-align: center; font-weight: normal; margin: 1.6em 0 .8em; }
+p { margin: 0; text-indent: 1.4em; text-align: justify; }
+/* The first paragraph after a heading or a break is not indented —
+   an indent there marks a continuation that hasn't happened. */
+h1 + p, h2 + p, .break + p { text-indent: 0; }
+.break { text-align: center; text-indent: 0; margin: 1.2em 0; }`);
+
+  chapters.forEach((c, i) => {
+    put(`OEBPS/ch${i + 1}.xhtml`, xhtmlChapter(c.title, c.html.join('\n')));
+  });
+
+  const manifest = chapters.map((_, i) =>
+    `<item id="ch${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('');
+  const spine = chapters.map((_, i) => `<itemref idref="ch${i + 1}"/>`).join('');
+
+  put('OEBPS/nav.xhtml', `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Contents</title></head><body>
+<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
+${chapters.map((c, i) => `<li><a href="ch${i + 1}.xhtml">${xmlEsc(c.title)}</a></li>`).join('')}
+</ol></nav></body></html>`);
+
+  put('OEBPS/content.opf', `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:identifier id="bookid">${uid}</dc:identifier>
+<dc:title>${xmlEsc(title)}</dc:title>
+<dc:creator>${xmlEsc(byline)}</dc:creator>
+<dc:language>en</dc:language>
+<meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
+</metadata>
+<manifest>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="css" href="style.css" media-type="text/css"/>
+${manifest}</manifest>
+<spine>${spine}</spine></package>`);
+
+  // The mimetype entry must come first and be STORED, not deflated —
+  // readers check the raw bytes at a fixed offset.
+  return fflate.zipSync({
+    'mimetype': [fflate.strToU8('application/epub+zip'), { level: 0 }],
+    ...files,
+  }, { level: 6 });
+}
+
+// ── Plain text ─────────────────────────────────────────────────────
+
+async function buildPlainText(scope) {
+  const md = await compileText(scope);
+  return stripWikilinks(md)
+    .replace(/^#{1,6}\s+/gm, '')       // headings become plain lines
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(\*|_)(.+?)\1/g, '$2')
+    .replace(/^\s*[-*]\s+/gm, '');
+}
+
+// ── Chooser ────────────────────────────────────────────────────────
+
+async function exportAs() {
+  await flushActiveScene();
+  const scope = await chooseWork('Compile');
+  if (!scope) return;
+
+  const fmt = await askChoice('Which format?', [
+    { label: 'Word (.docx) — standard manuscript format', value: 'docx' },
+    { label: 'EPUB — read it on a phone or e-reader',      value: 'epub' },
+    { label: 'Markdown (.md)',                              value: 'md' },
+    { label: 'Plain text (.txt)',                           value: 'txt' },
+  ]);
+  if (!fmt) return;
+
+  const base = `${slug(manuscriptTitle(scope), 'manuscript')}-${stamp()}`;
+  showToast('Compiling…');
+
+  try {
+    if (fmt === 'docx') {
+      downloadBlob(await buildDocx(scope), `${base}.docx`,
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    } else if (fmt === 'epub') {
+      downloadBlob(await buildEpub(scope), `${base}.epub`, 'application/epub+zip');
+    } else if (fmt === 'txt') {
+      downloadBlob(await buildPlainText(scope), `${base}.txt`, 'text/plain;charset=utf-8');
+    } else {
+      downloadBlob(await compileText(scope), `${base}.md`, 'text/markdown;charset=utf-8');
+    }
+    showToast('Compiled.');
+  } catch (e) {
+    console.error(e);
+    showToast('Compile failed — see the console.', 6000);
+  }
+}
+
 async function exportManuscript() {
   await flushActiveScene();
   const scope = await chooseWork('Compile');
@@ -3854,7 +4181,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     Auth.showGuestSwitchConfirm();
   });
 
-  $('btn-export-manuscript').addEventListener('click', () => exportManuscript()
+  $('btn-export-manuscript').addEventListener('click', () => exportAs()
     .catch(e => { console.error(e); showToast('Compile failed - see the console.'); }));
   $('btn-persist').addEventListener('click', () => requestPersistence({ force: true }));
   $('btn-import').addEventListener('click', () => $('import-file').click());
