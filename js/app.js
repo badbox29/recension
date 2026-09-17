@@ -828,6 +828,7 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
+  $('map-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'true');
 
   await renderReadView();
@@ -1218,6 +1219,7 @@ async function openScene(id) {
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
+  $('map-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
@@ -2178,6 +2180,7 @@ async function openCard(id) {
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
+  $('map-wrap').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2633,7 +2636,7 @@ async function openEvent(id) {
   App.view = 'edit';
 
   for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap',
-                   'grid-wrap', 'board-wrap']) $(h).hidden = true;
+                   'grid-wrap', 'board-wrap', 'map-wrap']) $(h).hidden = true;
   $('event-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -3573,6 +3576,7 @@ async function openTimeline() {
   $('timeline-wrap').hidden = false;
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
+  $('map-wrap').hidden = true;
   hideTlTip();
   $('tally').textContent = '';
   await renderTimeline();
@@ -3685,10 +3689,239 @@ async function openBoard() {
 
   App.view = 'board';
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
-                    'grid-wrap', 'empty']) $(id).hidden = true;
+                    'grid-wrap', 'map-wrap', 'empty']) $(id).hidden = true;
   $('board-wrap').hidden = false;
   $('tally').textContent = '';
   await renderBoard();
+}
+
+// ══ Mind map ═══════════════════════════════════════════════════════
+//
+// Cards as nodes, edges where two cards share a scene or an event.
+// Nothing here is authored: the whole graph falls out of [[links]] in
+// the prose and the participant lists on events, so it is a picture of
+// the book as written rather than a diagram you maintain beside it.
+//
+// The layout is a small force simulation — repulsion between every
+// pair, springs along edges, gravity toward the middle. No library: a
+// graph library is a large dependency to vendor for offline use, and
+// the whole simulation is about forty lines.
+//
+// DETERMINISTIC. Nodes start on a circle in a fixed order and the
+// simulation runs a fixed number of steps, so the same book produces
+// the same picture every time. A layout that reshuffles on every visit
+// would make it impossible to build any familiarity with the shape.
+
+const MAP = { w: 1100, h: 700, steps: 320 };
+
+function mapGraph(links, events, cards) {
+  const nodes = new Map();
+  const edges = new Map();
+
+  const touch = id => {
+    if (cards[id] && !nodes.has(id)) {
+      nodes.set(id, { id, card: cards[id], deg: 0 });
+    }
+    return nodes.has(id);
+  };
+
+  const join = (a, b, weight, why) => {
+    if (a === b) return;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    const e = edges.get(key) || { a: a < b ? a : b, b: a < b ? b : a, w: 0, why: new Set() };
+    e.w += weight;
+    e.why.add(why);
+    edges.set(key, e);
+  };
+
+  // Two cards linked from the same scene are connected. This is the
+  // edge that matters: it means they were on the page together.
+  for (const [, list] of Object.entries(links.byScene)) {
+    const ids = list.map(l => l.cardId).filter(touch);
+    for (let i = 0; i < ids.length; i++)
+      for (let j = i + 1; j < ids.length; j++) join(ids[i], ids[j], 1, 'scene');
+  }
+
+  // Participants in the same event, likewise — including events that
+  // never appear on the page, which is where most of a backstory is.
+  for (const e of Object.values(events)) {
+    const ids = (e.participants || []).filter(touch);
+    for (let i = 0; i < ids.length; i++)
+      for (let j = i + 1; j < ids.length; j++) join(ids[i], ids[j], 1.5, 'event');
+  }
+
+  for (const e of edges.values()) {
+    nodes.get(e.a).deg += e.w;
+    nodes.get(e.b).deg += e.w;
+  }
+  return { nodes: [...nodes.values()], edges: [...edges.values()] };
+}
+
+function layout(nodes, edges) {
+  const { w, h, steps } = MAP;
+  const cx = w / 2, cy = h / 2;
+
+  // Fixed starting ring, ordered by name — the source of the
+  // determinism promised above.
+  nodes.sort((x, y) => (x.card.name || '').localeCompare(y.card.name || ''));
+  nodes.forEach((n, i) => {
+    const t = (i / nodes.length) * Math.PI * 2;
+    n.x = cx + Math.cos(t) * Math.min(w, h) * 0.32;
+    n.y = cy + Math.sin(t) * Math.min(w, h) * 0.32;
+    n.vx = 0; n.vy = 0;
+  });
+
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const ideal = 120;
+
+  for (let step = 0; step < steps; step++) {
+    // Cooling, so it settles instead of oscillating forever.
+    const heat = 1 - step / steps;
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d = Math.hypot(dx, dy) || 0.01;
+        const push = 9000 / (d * d);
+        dx /= d; dy /= d;
+        a.vx -= dx * push; a.vy -= dy * push;
+        b.vx += dx * push; b.vy += dy * push;
+      }
+    }
+
+    for (const e of edges) {
+      const a = byId[e.a], b = byId[e.b];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 0.01;
+      // A heavier edge pulls harder, so pairs that share many scenes
+      // sit closer together than pairs that met once.
+      const pull = (d - ideal) * 0.012 * Math.min(3, e.w);
+      dx /= d; dy /= d;
+      a.vx += dx * pull; a.vy += dy * pull;
+      b.vx -= dx * pull; b.vy -= dy * pull;
+    }
+
+    for (const n of nodes) {
+      n.vx += (cx - n.x) * 0.006;
+      n.vy += (cy - n.y) * 0.006;
+      n.x += n.vx * heat; n.y += n.vy * heat;
+      n.vx *= 0.82; n.vy *= 0.82;
+      n.x = Math.max(70, Math.min(w - 70, n.x));
+      n.y = Math.max(40, Math.min(h - 40, n.y));
+    }
+  }
+}
+
+async function renderMap() {
+  const host = $('map');
+  host.replaceChildren();
+
+  const [links, events, cards] = await Promise.all([
+    RecordStore.linkGraph(), RecordStore.getAll('event'), RecordStore.getAll('card'),
+  ]);
+
+  const { nodes, edges } = mapGraph(links, events, cards);
+  const connected = nodes.filter(n => n.deg > 0);
+
+  if (connected.length < 2) {
+    host.append(el('p', 'rv-empty',
+      'Not enough connections yet. Two cards are joined when they appear ' +
+      'in the same scene or the same event.'));
+    return;
+  }
+
+  layout(connected, edges);
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs, text) => {
+    const n = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${MAP.w} ${MAP.h}`);
+  svg.setAttribute('width', MAP.w);
+  svg.setAttribute('height', MAP.h);
+  svg.classList.add('tl-svg', 'map-svg');
+
+  const byId = Object.fromEntries(connected.map(n => [n.id, n]));
+
+  const gEdges = mk('g', { class: 'mp-edges' });
+  for (const e of edges) {
+    const a = byId[e.a], b = byId[e.b];
+    if (!a || !b) continue;
+    const line = mk('line', {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      class: 'mp-edge' + (e.why.has('event') && !e.why.has('scene') ? ' offpage' : ''),
+      'stroke-width': Math.min(4, 0.7 + e.w * 0.5),
+    });
+    line.dataset.a = e.a;
+    line.dataset.b = e.b;
+    gEdges.append(line);
+  }
+  svg.append(gEdges);
+
+  for (const n of connected) {
+    // Size by degree, so the people the book is actually about are the
+    // ones you see first.
+    const r = 6 + Math.min(14, Math.sqrt(n.deg) * 3.2);
+    const g = mk('g', { class: 'mp-node', tabindex: '0', role: 'button',
+                        transform: `translate(${n.x} ${n.y})` });
+    g.dataset.id = n.id;
+
+    g.append(mk('circle', { r, class: `mp-dot t-${n.card.cardType || 'research'}` }));
+    const label = mk('text', { y: r + 13, class: 'mp-label', 'text-anchor': 'middle' },
+                     n.card.name || 'Untitled');
+    g.append(label);
+
+    const focus = on => {
+      svg.classList.toggle('focusing', on);
+      for (const line of gEdges.children) {
+        const hit = line.dataset.a === n.id || line.dataset.b === n.id;
+        line.classList.toggle('lit', on && hit);
+      }
+      for (const other of svg.querySelectorAll('.mp-node')) {
+        const near = other === g || [...gEdges.children].some(l =>
+          l.classList.contains('lit') &&
+          (l.dataset.a === other.dataset.id || l.dataset.b === other.dataset.id));
+        other.classList.toggle('dim', on && !near);
+      }
+    };
+
+    g.addEventListener('mouseenter', () => focus(true));
+    g.addEventListener('mouseleave', () => focus(false));
+    g.addEventListener('focus', () => focus(true));
+    g.addEventListener('blur', () => focus(false));
+    g.addEventListener('click', () => { railSection('cards'); openCard(n.id); });
+    g.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); railSection('cards'); openCard(n.id); }
+    });
+    svg.append(g);
+  }
+
+  host.append(svg);
+
+  const lonely = nodes.length - connected.length;
+  const note = el('p', 'grid-note',
+    `${connected.length} connected \u00B7 ${edges.length} link${edges.length === 1 ? '' : 's'}` +
+    (lonely ? ` \u00B7 ${lonely} card${lonely === 1 ? '' : 's'} not yet connected` : ''));
+  host.append(note);
+}
+
+async function openMap() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.view = 'map';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
+                    'grid-wrap', 'board-wrap', 'empty']) $(id).hidden = true;
+  $('map-wrap').hidden = false;
+  $('tally').textContent = '';
+  await renderMap();
 }
 
 // ══ Grid ═══════════════════════════════════════════════════════════
@@ -3820,6 +4053,7 @@ async function openGrid() {
     $(id).hidden = true;
   $('grid-wrap').hidden = false;
   $('board-wrap').hidden = true;
+  $('map-wrap').hidden = true;
   $('tally').textContent = '';
   await renderGrid();
 }
@@ -4309,6 +4543,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-timeline').addEventListener('click', openTimeline);
   $('btn-grid').addEventListener('click', openGrid);
   $('btn-board').addEventListener('click', openBoard);
+  $('btn-map').addEventListener('click', openMap);
   for (const b of document.querySelectorAll('.grid-types button')) {
     b.addEventListener('click', () => {
       gridFilter.type = b.dataset.type;
