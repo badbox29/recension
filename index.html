@@ -77,6 +77,9 @@
       </div>
 
     </div>
+    <div class="card-tools" id="toc-tools">
+      <button class="ghost-btn" id="btn-board">Board</button>
+    </div>
     <div class="toc" id="toc"></div>
     <div class="card-tools" id="card-tools" hidden>
       <button class="ghost-btn" id="btn-grid">Grid</button>
@@ -262,6 +265,15 @@
                   placeholder="What happened, and why it matters."></textarea>
       </div>
     </article>
+
+    <!-- Board. Scenes by status — the view that answers "how far along
+         is this" rather than "what is in it". -->
+    <section class="board-wrap" id="board-wrap" hidden aria-label="Board">
+      <header class="tl-head">
+        <h1>Board</h1>
+      </header>
+      <div class="board" id="board"></div>
+    </section>
 
     <!-- Grid. Scenes down, cards across, derived from the links in the
          prose rather than from tags maintained by hand. -->
