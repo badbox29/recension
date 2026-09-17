@@ -1255,6 +1255,7 @@ async function openScene(id) {
   }
 
   updateTally();
+  renderSceneNav(id);
   await renderTree();
   $('sheet').scrollTop = 0;
 }
@@ -1264,6 +1265,56 @@ function showEmpty() {
   $('scene').hidden = true;
   $('empty').hidden = false;
   $('tally').textContent = '';
+}
+
+// ── Scene to scene ─────────────────────────────────────────────────
+//
+// Previous and next at the foot of a scene. On a phone the rail is a
+// drawer, so moving from one chapter to the next was: open drawer,
+// scroll, tap, drawer closes — four actions for the most ordinary
+// movement there is. These make it one, and make the app read like an
+// ebook rather than a filing cabinet.
+//
+// Reading order, not creation order: parts, then chapters, then
+// scenes, with unplaced scenes last. Same order the read view and the
+// compile use, so "next" always means the same thing.
+
+function sceneOrder() {
+  const t = App.tree;
+  if (!t) return [];
+  const out = [];
+  for (const ch of RecordStore.allChapters(t)) {
+    for (const sc of ch.scenes) out.push({ ...sc, chapter: ch.title });
+  }
+  for (const sc of t.unfiled) out.push({ ...sc, chapter: null });
+  return out;
+}
+
+function renderSceneNav(sceneId) {
+  const nav = $('scene-nav');
+  nav.replaceChildren();
+
+  const order = sceneOrder();
+  const i = order.findIndex(s => s.id === sceneId);
+  if (i === -1) return;
+
+  const side = (sc, dir) => {
+    if (!sc) {
+      // An empty half rather than nothing, so the remaining button
+      // stays on its own side instead of sliding across the page.
+      nav.append(el('span', 'sn-gap'));
+      return;
+    }
+    const b = el('button', `sn ${dir}`);
+    b.append(el('span', 'sn-dir', dir === 'prev' ? '\u2190 Previous' : 'Next \u2192'));
+    b.append(el('span', 'sn-title', sc.title || 'Untitled scene'));
+    if (sc.chapter) b.append(el('span', 'sn-chapter', sc.chapter));
+    b.addEventListener('click', () => openScene(sc.id));
+    nav.append(b);
+  };
+
+  side(order[i - 1], 'prev');
+  side(order[i + 1], 'next');
 }
 
 // ── Rail ───────────────────────────────────────────────────────────
