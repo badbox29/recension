@@ -2345,3 +2345,49 @@ html.typewriter .scene-nav { margin-top: 1.5rem; }
 @media (max-width: 44rem) {
   .board-wrap { padding: 1.5rem 1rem 4rem; }
 }
+
+/* ── Card image ────────────────────────────────────────────────── */
+
+.card-image {
+  position: relative;
+  margin: 0 0 1rem;
+  max-width: 16rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--paper);
+  line-height: 0;
+}
+.card-image[hidden] { display: none; }
+
+.card-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Portraits and maps have wildly different shapes. Capping the
+     height stops a tall photograph pushing every field off the page. */
+  max-height: 20rem;
+  object-fit: cover;
+}
+
+/* Only offered on hover — a Remove button living permanently over a
+   portrait is an invitation to an accident. */
+.img-remove {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  opacity: 0;
+  font-size: var(--t-xs);
+  padding: 0.1875rem 0.4375rem;
+  background: var(--vellum);
+  transition: opacity .12s ease;
+}
+.card-image:hover .img-remove,
+.img-remove:focus-visible { opacity: 1; }
+
+.card-image-actions { margin-bottom: 1.25rem; }
+
+/* Touch has no hover, so the control has to be permanently visible. */
+@media (hover: none) {
+  .img-remove { opacity: 1; }
+}
