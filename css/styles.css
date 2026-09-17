@@ -162,6 +162,8 @@ svg:not(.tl-svg) {
   white-space: nowrap;
 }
 
+/* The tab strip used to sit between the wordmark and these, and take
+   the slack. Without it the buttons need pushing right themselves. */
 .bar-end {
   margin-left: auto;
   display: flex;
@@ -228,49 +230,6 @@ svg:not(.tl-svg) {
 }
 .solid-btn:hover { opacity: .88; }
 .solid-btn.danger { background: var(--rubric); border-color: var(--rubric); color: #fff; }
-
-/* ── Tabs ──────────────────────────────────────────────────────── */
-
-.tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 1px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  flex: 1;
-  min-width: 0;
-}
-.tabs::-webkit-scrollbar { display: none; }
-
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0 0.5rem;
-  max-width: 12rem;
-  font-size: var(--t-sm);
-  color: var(--ink-soft);
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-}
-.tab:hover { color: var(--ink); }
-.tab[aria-selected="true"] {
-  color: var(--ink);
-  border-bottom-color: var(--ink);
-}
-.tab-label { overflow: hidden; text-overflow: ellipsis; }
-.tab-close {
-  opacity: 0;
-  border: 0; background: none; cursor: pointer;
-  color: inherit; padding: 0; line-height: 0;
-}
-.tab:hover .tab-close, .tab[aria-selected="true"] .tab-close { opacity: .55; }
-.tab-close:hover { opacity: 1; }
-.tab-close svg { width: 0.75rem; height: 0.75rem; }
 
 /* ── Frame ─────────────────────────────────────────────────────── */
 
