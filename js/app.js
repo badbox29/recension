@@ -827,6 +827,7 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
   $('readview').hidden = false;
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
+  $('board-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'true');
 
   await renderReadView();
@@ -1216,6 +1217,7 @@ async function openScene(id) {
   $('readview').hidden = true;
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
+  $('board-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
@@ -2067,6 +2069,7 @@ function railSection(name) {
   $('toc').hidden         = name !== 'manuscript';
   $('card-list').hidden   = name !== 'cards';
   $('card-tools').hidden  = name !== 'cards';
+  $('toc-tools').hidden   = name !== 'manuscript';
   $('event-list').hidden  = name !== 'events';
   $('ev-filter').hidden   = name !== 'events';
   saveLocal();
@@ -2162,6 +2165,7 @@ async function openCard(id) {
   $('event-edit').hidden = true;
   $('timeline-wrap').hidden = true;
   $('grid-wrap').hidden = true;
+  $('board-wrap').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2498,8 +2502,8 @@ async function openEvent(id) {
   App.activeCard = null;
   App.view = 'edit';
 
-  for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap', 'grid-wrap'])
-    $(h).hidden = true;
+  for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap',
+                   'grid-wrap', 'board-wrap']) $(h).hidden = true;
   $('event-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -3419,9 +3423,123 @@ async function openTimeline() {
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'empty']) $(id).hidden = true;
   $('timeline-wrap').hidden = false;
   $('grid-wrap').hidden = true;
+  $('board-wrap').hidden = true;
   hideTlTip();
   $('tally').textContent = '';
   await renderTimeline();
+}
+
+// ══ Board ══════════════════════════════════════════════════════════
+//
+// Scenes in columns by status. Status has existed since the first
+// version and surfaced nowhere except a dagger in the margin of the
+// rail — which tells you a scene is revised but never tells you where
+// the draft as a whole stands.
+//
+// NO DRAG. Every other destructive or structural action here asks
+// first; drag-and-drop is the one gesture that commits on release with
+// no confirmation and no undo. On a board it would also be the easiest
+// thing in the app to do by accident. Each card carries three explicit
+// status buttons instead: deliberate, keyboard-reachable, and
+// impossible to trigger by brushing a trackpad.
+
+const BOARD_COLUMNS = [
+  { id: 'draft',   label: 'Draft',   hint: 'Written once.' },
+  { id: 'revised', label: 'Revised', hint: 'Been back through it.' },
+  { id: 'final',   label: 'Final',   hint: 'Done until someone says otherwise.' },
+];
+
+async function renderBoard() {
+  const host = $('board');
+  host.replaceChildren();
+
+  const scenes = sceneOrder();
+  if (!scenes.length) {
+    host.append(el('p', 'rv-empty', 'No scenes yet.'));
+    return;
+  }
+
+  const total = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+
+  for (const col of BOARD_COLUMNS) {
+    const mine = scenes.filter(s => (s.status || 'draft') === col.id);
+    const words = mine.reduce((n, s) => n + (s.wordCount || 0), 0);
+
+    const section = el('section', 'bd-col');
+
+    const head = el('header', 'bd-head');
+    head.append(el('h2', null, col.label));
+    // The share of the manuscript in each state is the number that
+    // actually answers "how far along am I".
+    const pct = total ? Math.round((words / total) * 100) : 0;
+    head.append(el('span', 'bd-count',
+      `${mine.length} \u00B7 ${fmtWords(words)}${total ? ` \u00B7 ${pct}%` : ''}`));
+    section.append(head);
+
+    const bar = el('div', 'bd-bar');
+    const fill = el('div', `bd-fill s-${col.id}`);
+    fill.style.width = `${pct}%`;
+    bar.append(fill);
+    section.append(bar);
+
+    const list = el('div', 'bd-list');
+    if (!mine.length) {
+      list.append(el('p', 'bd-empty', col.hint));
+    }
+    for (const sc of mine) list.append(boardCard(sc));
+    section.append(list);
+
+    host.append(section);
+  }
+}
+
+function boardCard(sc) {
+  const card = el('article', 'bd-card');
+
+  const open = el('button', 'bd-open');
+  open.append(el('span', 'bd-title', sc.title || 'Untitled scene'));
+  if (sc.chapter) open.append(el('span', 'bd-chapter', sc.chapter));
+  if (sc.synopsis) open.append(el('span', 'bd-syn', sc.synopsis));
+  open.addEventListener('click', () => { railSection('manuscript'); openScene(sc.id); });
+  card.append(open);
+
+  const foot = el('div', 'bd-foot');
+  foot.append(el('span', 'bd-words', fmtWords(sc.wordCount)));
+
+  const set = el('div', 'bd-set', null);
+  set.setAttribute('role', 'group');
+  set.setAttribute('aria-label', `Status of ${sc.title || 'scene'}`);
+  for (const col of BOARD_COLUMNS) {
+    const b = el('button', `bd-pip s-${col.id}`, col.label[0]);
+    b.title = col.label;
+    b.setAttribute('aria-pressed', String((sc.status || 'draft') === col.id));
+    b.addEventListener('click', async e => {
+      e.stopPropagation();
+      const rec = await RecordStore.get('scene', sc.id);
+      if (!rec) return;
+      await RecordStore.put('scene', sc.id, { ...rec, status: col.id });
+      await renderTree();
+      await renderBoard();
+      refreshSyncState();
+    });
+    set.append(b);
+  }
+  foot.append(set);
+  card.append(foot);
+  return card;
+}
+
+async function openBoard() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.view = 'board';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
+                    'grid-wrap', 'empty']) $(id).hidden = true;
+  $('board-wrap').hidden = false;
+  $('tally').textContent = '';
+  await renderBoard();
 }
 
 // ══ Grid ═══════════════════════════════════════════════════════════
@@ -3552,6 +3670,7 @@ async function openGrid() {
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap', 'empty'])
     $(id).hidden = true;
   $('grid-wrap').hidden = false;
+  $('board-wrap').hidden = true;
   $('tally').textContent = '';
   await renderGrid();
 }
@@ -4040,6 +4159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   $('btn-timeline').addEventListener('click', openTimeline);
   $('btn-grid').addEventListener('click', openGrid);
+  $('btn-board').addEventListener('click', openBoard);
   for (const b of document.querySelectorAll('.grid-types button')) {
     b.addEventListener('click', () => {
       gridFilter.type = b.dataset.type;
