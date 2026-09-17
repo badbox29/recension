@@ -2411,8 +2411,22 @@ html.dark {
   --c-research:  #9398A0;
 }
 
-.map-scroll { overflow: auto; }
-.map-svg { display: block; width: auto; height: auto; }
+/* The map has its own viewport. Zooming the page instead would take
+   the rail and the header with it — the opposite of what you want when
+   you're trying to read a cluster of names in one corner. */
+.map-scroll {
+  overflow: hidden;
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  touch-action: none;        /* pointer events handle pan themselves */
+}
+.map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: grab;
+}
+.map-svg.panning { cursor: grabbing; }
 
 .mp-edge {
   stroke: var(--rule);
