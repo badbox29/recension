@@ -2391,3 +2391,63 @@ html.typewriter .scene-nav { margin-top: 1.5rem; }
 @media (hover: none) {
   .img-remove { opacity: 1; }
 }
+
+/* ══ Mind map ══════════════════════════════════════════════════════
+   Card types get their own colours here, kept in the same low-chroma
+   family as the event palette so the two views look like one app. */
+
+:root {
+  --c-character: #3F6280;
+  --c-location:  #4C6B54;
+  --c-faction:   #9A6B2C;
+  --c-item:      #7A5C7E;
+  --c-research:  #6B7079;
+}
+html.dark {
+  --c-character: #7BA3C6;
+  --c-location:  #7FAE8A;
+  --c-faction:   #D3A05A;
+  --c-item:      #AE92B2;
+  --c-research:  #9398A0;
+}
+
+.map-scroll { overflow: auto; }
+.map-svg { display: block; width: auto; height: auto; }
+
+.mp-edge {
+  stroke: var(--rule);
+  opacity: .55;
+  transition: opacity .12s ease, stroke .12s ease;
+}
+/* A connection that exists only offscreen — two people who share an
+   event that never appears on the page. Dashed, because it is real
+   but the reader never sees it. */
+.mp-edge.offpage { stroke-dasharray: 3 4; }
+.mp-edge.lit { stroke: var(--rubric); opacity: 1; }
+
+/* Hovering a node dims everything it isn't connected to. On a graph of
+   twenty cards that is the difference between a picture and a hairball. */
+.map-svg.focusing .mp-edge:not(.lit) { opacity: .12; }
+.mp-node { cursor: pointer; transition: opacity .12s ease; }
+.mp-node.dim { opacity: .2; }
+.mp-node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+.mp-dot { stroke: var(--vellum); stroke-width: 2; transition: fill .12s ease; }
+.mp-dot.t-character { fill: var(--c-character); }
+.mp-dot.t-location  { fill: var(--c-location); }
+.mp-dot.t-faction   { fill: var(--c-faction); }
+.mp-dot.t-item      { fill: var(--c-item); }
+.mp-dot.t-research  { fill: var(--c-research); }
+.mp-node:hover .mp-dot { fill: var(--rubric); }
+
+.mp-label {
+  fill: var(--ink);
+  font-family: var(--prose);
+  font-size: 12px;
+  pointer-events: none;
+  /* A halo, so a label crossing an edge stays readable. */
+  paint-order: stroke;
+  stroke: var(--vellum);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
