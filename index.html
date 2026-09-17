@@ -83,6 +83,7 @@
     <div class="toc" id="toc"></div>
     <div class="card-tools" id="card-tools" hidden>
       <button class="ghost-btn" id="btn-grid">Grid</button>
+      <button class="ghost-btn" id="btn-map">Map</button>
     </div>
     <div class="toc" id="card-list" hidden></div>
     <!-- Event filters. Chronology is the only grouping — filtering
@@ -274,6 +275,16 @@
                   placeholder="What happened, and why it matters."></textarea>
       </div>
     </article>
+
+    <!-- Mind map. Cards as nodes, edges where two share a scene or an
+         event. Nothing authored — the whole graph falls out of the
+         links in the prose. -->
+    <section class="board-wrap" id="map-wrap" hidden aria-label="Mind map">
+      <header class="tl-head">
+        <h1>Map</h1>
+      </header>
+      <div class="map-scroll" id="map"></div>
+    </section>
 
     <!-- Board. Scenes by status — the view that answers "how far along
          is this" rather than "what is in it". -->
