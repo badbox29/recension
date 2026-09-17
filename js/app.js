@@ -3714,6 +3714,42 @@ async function openBoard() {
 
 const MAP = { w: 1100, h: 700, steps: 320 };
 
+// The map has its own viewport rather than relying on the page.
+// Browser zoom would take the rail and the header with it, which is
+// the opposite of what you want when you're trying to read a cluster
+// of names in the corner of a graph.
+const mapView = { z: 1, x: 0, y: 0 };
+
+function applyMapView(svg) {
+  const w = MAP.w / mapView.z;
+  const h = MAP.h / mapView.z;
+  // Clamp so the graph can't be dragged off into empty space and lost.
+  mapView.x = Math.max(-MAP.w * 0.5, Math.min(MAP.w * 1.5 - w, mapView.x));
+  mapView.y = Math.max(-MAP.h * 0.5, Math.min(MAP.h * 1.5 - h, mapView.y));
+  svg.setAttribute('viewBox', `${mapView.x} ${mapView.y} ${w} ${h}`);
+}
+
+function zoomMap(factor, cx = 0.5, cy = 0.5) {
+  const svg = document.querySelector('.map-svg');
+  if (!svg) return;
+  const prev = mapView.z;
+  mapView.z = Math.max(0.4, Math.min(6, mapView.z * factor));
+  if (mapView.z === prev) return;
+  // Keep whatever is under the pointer (or the centre) where it is,
+  // instead of zooming toward the origin and losing your place.
+  const w0 = MAP.w / prev, h0 = MAP.h / prev;
+  const w1 = MAP.w / mapView.z, h1 = MAP.h / mapView.z;
+  mapView.x += (w0 - w1) * cx;
+  mapView.y += (h0 - h1) * cy;
+  applyMapView(svg);
+}
+
+function fitMap() {
+  mapView.z = 1; mapView.x = 0; mapView.y = 0;
+  const svg = document.querySelector('.map-svg');
+  if (svg) applyMapView(svg);
+}
+
 function mapGraph(links, events, cards) {
   const nodes = new Map();
   const edges = new Map();
@@ -3842,10 +3878,12 @@ async function renderMap() {
   };
 
   const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${MAP.w} ${MAP.h}`);
-  svg.setAttribute('width', MAP.w);
+  svg.setAttribute('width', '100%');
   svg.setAttribute('height', MAP.h);
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   svg.classList.add('tl-svg', 'map-svg');
+  applyMapView(svg);
+  wireMapGestures(svg);
 
   const byId = Object.fromEntries(connected.map(n => [n.id, n]));
 
@@ -3909,6 +3947,55 @@ async function renderMap() {
     `${connected.length} connected \u00B7 ${edges.length} link${edges.length === 1 ? '' : 's'}` +
     (lonely ? ` \u00B7 ${lonely} card${lonely === 1 ? '' : 's'} not yet connected` : ''));
   host.append(note);
+}
+
+/**
+ * wireMapGestures(svg) — wheel to zoom, drag to pan.
+ *
+ * Panning by dragging the background is safe in a way dragging nodes
+ * would not be: it moves the camera, never the data. Nothing here can
+ * change the book.
+ */
+function wireMapGestures(svg) {
+  svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = svg.getBoundingClientRect();
+    zoomMap(e.deltaY < 0 ? 1.15 : 1 / 1.15,
+            (e.clientX - r.left) / r.width,
+            (e.clientY - r.top) / r.height);
+  }, { passive: false });
+
+  let panning = false, lastX = 0, lastY = 0;
+
+  svg.addEventListener('pointerdown', e => {
+    // Only the background pans. Starting a drag on a node would fight
+    // the click that opens its card.
+    if (e.target.closest('.mp-node')) return;
+    panning = true;
+    lastX = e.clientX; lastY = e.clientY;
+    svg.setPointerCapture(e.pointerId);
+    svg.classList.add('panning');
+  });
+
+  svg.addEventListener('pointermove', e => {
+    if (!panning) return;
+    const r = svg.getBoundingClientRect();
+    // Convert screen pixels to viewBox units, or panning drifts out of
+    // step with the pointer the moment you zoom.
+    mapView.x -= (e.clientX - lastX) * (MAP.w / mapView.z) / r.width;
+    mapView.y -= (e.clientY - lastY) * (MAP.h / mapView.z) / r.height;
+    lastX = e.clientX; lastY = e.clientY;
+    applyMapView(svg);
+  });
+
+  const stop = e => {
+    if (!panning) return;
+    panning = false;
+    svg.releasePointerCapture?.(e.pointerId);
+    svg.classList.remove('panning');
+  };
+  svg.addEventListener('pointerup', stop);
+  svg.addEventListener('pointercancel', stop);
 }
 
 async function openMap() {
@@ -4544,6 +4631,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('btn-grid').addEventListener('click', openGrid);
   $('btn-board').addEventListener('click', openBoard);
   $('btn-map').addEventListener('click', openMap);
+  $('mp-in').addEventListener('click', () => zoomMap(1.4));
+  $('mp-out').addEventListener('click', () => zoomMap(1 / 1.4));
+  $('mp-fit').addEventListener('click', fitMap);
   for (const b of document.querySelectorAll('.grid-types button')) {
     b.addEventListener('click', () => {
       gridFilter.type = b.dataset.type;
