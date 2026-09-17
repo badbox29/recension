@@ -3,7 +3,7 @@
  * app.js — Recension
  * ============================================================
  *
- * Boot, the contents tree, tabs, the editor, and the wiring between
+ * Boot, the contents tree, the editor, and the wiring between
  * Auth / Sync / RecordStore.
  *
  * WHAT LIVES WHERE
@@ -75,7 +75,12 @@ function defaultData() {
       address: '', email: '', phone: '',
       agent: '', agentContact: '', copyright: '',
     },
-    tabState:  { openIds: [], activeId: null },
+    // Which scene to reopen on launch. This is all the tab bar was
+    // really providing: a second navigation system beside the rail,
+    // showing five truncated titles where the rail shows the whole
+    // book with word counts. On a phone it collapsed to an underscore
+    // and an X.
+    openSceneId: null,
     tocState:  { collapsedIds: [] },
     typewriter: false,
   };
@@ -93,10 +98,9 @@ function mergeData(raw) {
     // this path is hit on every pull. Keep what we already have.
     userToken: raw?.userToken || App.data?.userToken || d.userToken,
     author: { ...d.author, ...(raw.author && typeof raw.author === 'object' ? raw.author : {}) },
-    tabState: (raw.tabState && typeof raw.tabState === 'object')
-      ? { openIds: Array.isArray(raw.tabState.openIds) ? raw.tabState.openIds : [],
-          activeId: raw.tabState.activeId ?? null }
-      : d.tabState,
+    // Accept the old tabState shape so an account written by an earlier
+    // version still reopens the right scene.
+    openSceneId: raw?.openSceneId ?? raw?.tabState?.activeId ?? null,
     tocState: (raw.tocState && typeof raw.tocState === 'object')
       ? { collapsedIds: Array.isArray(raw.tocState.collapsedIds) ? raw.tocState.collapsedIds : [] }
       : d.tocState,
@@ -119,7 +123,7 @@ function accountForSync() {
     // removed from the sign-up wizard (the author block below is the real
     // identity), so there is nothing left to replicate.
     author: d.author,
-    tabState: d.tabState,
+    openSceneId: d.openSceneId,
     tocState: d.tocState,
     typewriter: d.typewriter,
   };
@@ -517,7 +521,6 @@ function startRename(labelEl, kind, id, current) {
       if (App.section === 'events') await renderEvents();
       await renderTree();
       if (App.section === 'cards') await renderCards();
-      renderTabs();
       refreshSyncState();
     }
   };
@@ -575,16 +578,14 @@ function confirmDelete(kind, id, title) {
     if (kind === 'chapter') await RecordStore.deleteChapter(id);
     if (kind === 'scene') {
       await RecordStore.deleteScene(id);
-      App.data.tabState.openIds = App.data.tabState.openIds.filter(x => x !== id);
-      if (App.data.tabState.activeId === id) {
+      if (App.data.openSceneId === id) {
         App.activeScene = null;
-        App.data.tabState.activeId = App.data.tabState.openIds.at(-1) || null;
+        App.data.openSceneId = null;
       }
       saveAccount();
     }
     await renderTree();
-    renderTabs();
-    App.data.tabState.activeId ? openScene(App.data.tabState.activeId) : showEmpty();
+    App.data.openSceneId ? openScene(App.data.openSceneId) : showEmpty();
     refreshSyncState();
   });
 }
@@ -743,7 +744,7 @@ function sceneRow(sc, deep = false) {
     title: sc.title,
     figure: fmtWords(sc.wordCount),
     status: sc.status && sc.status !== 'draft' ? sc.status : null,
-    current: App.data.tabState.activeId === sc.id,
+    current: App.data.openSceneId === sc.id,
     onOpen: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
   });
 }
@@ -904,11 +905,10 @@ let _spyRaf = null;
 function updateSpy() {
   if (App.view !== 'read') return;
   const centred = centredScene();
-  if (!centred || centred === App.data.tabState.activeId) return;
-  App.data.tabState.activeId = centred;
+  if (!centred || centred === App.data.openSceneId) return;
+  App.data.openSceneId = centred;
   saveLocal();              // position, not content — no need to sync it
   renderTree();
-  renderTabs();
 }
 
 function centredScene() {
@@ -979,10 +979,10 @@ function defaultReadScope() {
 function toggleRead() {
   if (App.view === 'read') {
     App.readReturn
-      ? editFromRead(App.data.tabState.activeId)
+      ? editFromRead(App.data.openSceneId)
       : exitRead();
   } else {
-    openRead(defaultReadScope(), App.data.tabState.activeId);
+    openRead(defaultReadScope(), App.data.openSceneId);
   }
 }
 
@@ -990,54 +990,13 @@ function exitRead() {
   App.view = 'edit';
   $('readview').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
-  App.data.tabState.activeId ? openScene(App.data.tabState.activeId) : showEmpty();
+  App.data.openSceneId ? openScene(App.data.openSceneId) : showEmpty();
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────
 
-function renderTabs() {
-  const bar = $('tabs');
-  bar.replaceChildren();
 
-  for (const id of App.data.tabState.openIds) {
-    const meta = findSceneMeta(id);
-    if (!meta) continue;
 
-    const tab = el('button', 'tab');
-    tab.setAttribute('role', 'tab');
-    tab.setAttribute('aria-selected', String(App.data.tabState.activeId === id));
-    tab.append(el('span', 'tab-label', meta.title || 'Untitled'));
-
-    const close = el('button', 'tab-close');
-    close.setAttribute('aria-label', `Close ${meta.title || 'scene'}`);
-    close.innerHTML = '<svg viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"/></svg>';
-    close.addEventListener('click', e => { e.stopPropagation(); closeTab(id); });
-
-    tab.append(close);
-    tab.addEventListener('click', () => openScene(id));
-    bar.append(tab);
-  }
-}
-
-function findSceneMeta(id) {
-  if (!App.tree) return null;
-  for (const ch of RecordStore.allChapters(App.tree)) {
-    const hit = ch.scenes.find(s => s.id === id);
-    if (hit) return hit;
-  }
-  return App.tree.unfiled.find(s => s.id === id) || null;
-}
-
-async function closeTab(id) {
-  if (App.data.tabState.activeId === id) await flushActiveScene();
-  App.data.tabState.openIds = App.data.tabState.openIds.filter(x => x !== id);
-  if (App.data.tabState.activeId === id) {
-    App.data.tabState.activeId = App.data.tabState.openIds.at(-1) || null;
-  }
-  saveAccount();
-  renderTabs();
-  App.data.tabState.activeId ? openScene(App.data.tabState.activeId) : showEmpty();
-}
 
 // ── Editor ─────────────────────────────────────────────────────────
 
@@ -1232,7 +1191,6 @@ async function flushActiveScene() {
   await RecordStore.put('scene', sc.id, next);
   App.activeScene = { ...next };
   await renderTree();
-  renderTabs();
   refreshSyncState();
 }
 
@@ -1245,8 +1203,7 @@ async function openScene(id) {
   if (!sc) { showToast('That scene is gone.'); await renderTree(); return; }
 
   App.activeScene = sc;
-  if (!App.data.tabState.openIds.includes(id)) App.data.tabState.openIds.push(id);
-  App.data.tabState.activeId = id;
+  App.data.openSceneId = id;
   saveAccount();
 
   App.view = 'edit';
@@ -1298,7 +1255,6 @@ async function openScene(id) {
   }
 
   updateTally();
-  renderTabs();
   await renderTree();
   $('sheet').scrollTop = 0;
 }
@@ -2296,8 +2252,8 @@ async function flushActiveEvent() {
  *
  * Signing in is not a data refresh; it's a change of subject. Everything
  * pointing at the previous account has to let go first, or the editor
- * keeps showing text from an account you are no longer in and the tabs
- * reference ids that may not exist here.
+ * keeps showing text from an account you are no longer in, and the
+ * remembered open scene may not exist here at all.
  *
  * eraseLocal comes from the "discard my guest notes" choice in the auth
  * wizard. It has to clear the DIRTY SET as well as the records: the dirty
@@ -2338,9 +2294,8 @@ async function applySignIn(data, isNew, { eraseLocal } = {}) {
   // 4. Redraw everything, not just the tree — the rail may be showing
   //    cards or events, and those changed too.
   await railSection(App.section || 'manuscript');
-  renderTabs();
 
-  const active = App.data.tabState.activeId;
+  const active = App.data.openSceneId;
   if (active && await RecordStore.get('scene', active)) await openScene(active);
   else showEmpty();
 
@@ -2761,7 +2716,6 @@ async function runImport(file) {
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview']) $(id).hidden = true;
 
   await railSection(App.section || 'manuscript');
-  renderTabs();
   showEmpty();
   refreshSyncState();
 
@@ -3807,7 +3761,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const pushed = await Sync.flush();
     const pulled = await Sync.pull();
     await renderTree();
-    renderTabs();
     if (pushed.ok && pulled.ok) showToast('Synced.');
     else showToast('Sync incomplete — it will retry on its own.');
     Sync.lastSyncTime().then(t => {
@@ -3924,20 +3877,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Start ───────────────────────────────────────────────────────
 
   await renderTree();
-  renderTabs();
 
   if (!Auth.isGuest() && App.data.workerUrl) {
     Sync.start();
     Sync.pull().then(r => {
       if (r?.migrated) return;     // handled by onAccountMigrated
       renderTree();
-      renderTabs();
     });
   }
 
   if (typeof Auth.bootCheck === 'function') await Auth.bootCheck();
 
-  const active = App.data.tabState.activeId;
+  const active = App.data.openSceneId;
   if (active && await RecordStore.get('scene', active)) openScene(active);
   else showEmpty();
 
