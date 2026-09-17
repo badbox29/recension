@@ -2015,6 +2015,18 @@ async function exportBackup() {
 
   files['compiled.md'] = enc(await compileText());
 
+  // Images, as real files. The JSON carries only the imageKey string,
+  // so without these a restored card would point at a portrait that
+  // exists nowhere — and a backup billed as "everything" would quietly
+  // not be.
+  for (const c of Object.values(cards)) {
+    if (!c.imageKey) continue;
+    const blob = await RecordStore.getImage(c.id);
+    if (!blob) continue;
+    const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+    files[`images/${c.id}.${ext}`] = new Uint8Array(await blob.arrayBuffer());
+  }
+
   // The restorable copy: full records with ids, timestamps and ordering —
   // everything the .md files drop on the way out.
   files['recension-backup.json'] = enc(JSON.stringify({
@@ -2177,6 +2189,7 @@ async function openCard(id) {
   autoGrow($('card-body'));
   renderAppearances(c.id);
   renderCardFields(c.fields || {});
+  paintCardImage(c.id);
 
   $('tally').textContent = '';
   renderCards();
@@ -2277,6 +2290,123 @@ async function flushActiveCard() {
   App.lastCardType = next.cardType;
   await renderCards();
   refreshSyncState();
+}
+
+// ══ Card images ════════════════════════════════════════════════════
+//
+// A portrait, a map, a photograph of a place. Stored as a blob in
+// IndexedDB and mirrored to R2 through the worker's /blob routes — the
+// last part of the backend that had been built and never called.
+//
+// DOWNSCALED ON THE WAY IN. A phone photo is three to six megabytes;
+// a card portrait needs a few hundred kilobytes at most. Uploading the
+// original would mean slow syncs, a fat R2 bill eventually, and a
+// mobile client pulling megabytes to show a thumbnail. The resize
+// happens client-side before anything is stored, so the large version
+// never exists anywhere.
+
+const IMG_MAX = 1200;        // longest edge, px
+const IMG_QUALITY = 0.82;    // JPEG quality after resize
+
+/**
+ * shrinkImage(file) → Blob
+ *
+ * Canvas downscale. Transparency is preserved by keeping PNGs as PNG;
+ * everything else becomes JPEG, which is dramatically smaller for
+ * photographs and is what most of these will be.
+ */
+async function shrinkImage(file) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, IMG_MAX / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+
+  const png = file.type === 'image/png';
+  return await new Promise(res =>
+    canvas.toBlob(res, png ? 'image/png' : 'image/jpeg', png ? undefined : IMG_QUALITY));
+}
+
+function blobKeyFor(cardId) { return `img/${cardId}`; }
+
+async function setCardImage(cardId, file) {
+  if (!file.type.startsWith('image/')) {
+    showToast('That is not an image.');
+    return;
+  }
+
+  showToast('Adding image…');
+  let blob;
+  try { blob = await shrinkImage(file); }
+  catch (e) { console.error(e); showToast('Could not read that image.'); return; }
+
+  await RecordStore.putImage(cardId, blob);
+
+  const rec = await RecordStore.get('card', cardId);
+  if (rec) await RecordStore.put('card', cardId, { ...rec, imageKey: blobKeyFor(cardId) });
+  App.activeCard = await RecordStore.get('card', cardId);
+
+  await paintCardImage(cardId);
+  await renderCards();
+  refreshSyncState();
+
+  // Upload after the local write. The image is already usable; the
+  // mirror is for other devices and can fail without costing anything
+  // here.
+  if (!Auth.isGuest() && App.data.workerUrl) {
+    const ok = await Sync.putBlob(blobKeyFor(cardId), blob, blob.type);
+    if (!ok) showToast('Image saved here, but not uploaded yet.', 5000);
+  }
+}
+
+async function removeCardImage(cardId) {
+  await RecordStore.deleteImage(cardId);
+  const rec = await RecordStore.get('card', cardId);
+  if (rec) await RecordStore.put('card', cardId, { ...rec, imageKey: null });
+  App.activeCard = await RecordStore.get('card', cardId);
+  await paintCardImage(cardId);
+  await renderCards();
+  if (!Auth.isGuest() && App.data.workerUrl) Sync.deleteBlob(blobKeyFor(cardId));
+}
+
+// Object URLs are revoked when replaced, or they accumulate for the
+// life of the session — one leak per card you look at.
+let _cardImgUrl = null;
+
+async function paintCardImage(cardId) {
+  const wrap = $('card-image');
+  const img = $('card-img');
+  const btn = $('btn-card-image');
+
+  if (_cardImgUrl) { URL.revokeObjectURL(_cardImgUrl); _cardImgUrl = null; }
+
+  let blob = await RecordStore.getImage(cardId);
+
+  // Not here but recorded on the card: another device uploaded it.
+  // Fetch once and keep it locally.
+  if (!blob && App.activeCard?.imageKey && !Auth.isGuest() && App.data.workerUrl) {
+    blob = await Sync.getBlob(App.activeCard.imageKey);
+    if (blob) await RecordStore.putImage(cardId, blob);
+  }
+
+  if (!blob) {
+    wrap.hidden = true;
+    img.removeAttribute('src');
+    btn.textContent = 'Add an image';
+    return;
+  }
+
+  _cardImgUrl = URL.createObjectURL(blob);
+  img.src = _cardImgUrl;
+  wrap.hidden = false;
+  btn.textContent = 'Replace image';
 }
 
 // ══ Events ═════════════════════════════════════════════════════════
@@ -3018,7 +3148,16 @@ async function readBackupFile(file) {
     throw new Error('No recension-backup.json in that zip. The .md files ' +
                     'alone cannot be restored — they carry no ids or ordering.');
   }
-  return JSON.parse(new TextDecoder().decode(entries[key]));
+  const data = JSON.parse(new TextDecoder().decode(entries[key]));
+
+  // Card images ride in the zip as real files, keyed by card id.
+  data._images = {};
+  for (const [name, bytes] of Object.entries(entries)) {
+    const m = name.match(/(?:^|\/)images\/([^/]+)\.(png|jpg)$/);
+    if (!m) continue;
+    data._images[m[1]] = { bytes, type: m[2] === 'png' ? 'image/png' : 'image/jpeg' };
+  }
+  return data;
 }
 
 function describeBackup(data) {
@@ -3034,6 +3173,8 @@ function describeBackup(data) {
 
   const words = Object.values(r.scene || {})
     .reduce((n, s) => n + (s.wordCount || 0), 0);
+  const images = Object.keys(data?._images || {}).length;
+  if (images) bits.push(`${images} image${images === 1 ? '' : 's'}`);
 
   return {
     when,
@@ -3091,6 +3232,14 @@ async function runImport(file) {
     App.data.author = { ...App.data.author, ...data.author };
     saveAccount();
     loadAuthorFields();
+  }
+
+  // Restore any images that travelled with the backup.
+  if (data._images) {
+    for (const [cardId, { bytes, type }] of Object.entries(data._images)) {
+      if (mode !== 'replace' && await RecordStore.getImage(cardId)) continue;
+      await RecordStore.putImage(cardId, new Blob([bytes], { type }));
+    }
   }
 
   invalidateCardIndex();
@@ -4217,6 +4366,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     await flushActiveCard();
     if (added) showToast(`Added ${added} ${CARD_TYPE_SINGULAR[type]} field${added === 1 ? '' : 's'}.`);
   });
+  $('btn-card-image').addEventListener('click', () => $('card-image-file').click());
+  $('card-image-file').addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';           // so the same file can be chosen twice
+    if (file && App.activeCard) await setCardImage(App.activeCard.id, file);
+  });
+  $('btn-remove-image').addEventListener('click', () => {
+    if (!App.activeCard) return;
+    showConfirm('Remove this image?', () => removeCardImage(App.activeCard.id), 'Remove');
+  });
+
   $('btn-add-field').addEventListener('click', () => {
     const fields = readCardFields();
     fields[''] = '';                       // an empty row to type into

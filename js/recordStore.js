@@ -92,9 +92,10 @@
 const RecordStore = (() => {
 
   const DB_NAME    = 'recension';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;   // 2: added the images store
   const RECORDS    = 'records';
   const INDEX      = 'index';
+  const IMAGES     = 'images';
 
   const TYPES = ['book', 'part', 'chapter', 'scene', 'card', 'event'];
 
@@ -110,6 +111,9 @@ const RecordStore = (() => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(RECORDS)) db.createObjectStore(RECORDS);
         if (!db.objectStoreNames.contains(INDEX))   db.createObjectStore(INDEX);
+        // Blobs, keyed by card id. Separate from records so a portrait
+        // is never serialized alongside JSON that's read constantly.
+        if (!db.objectStoreNames.contains(IMAGES))  db.createObjectStore(IMAGES);
       };
       req.onsuccess = e => {
         const db = e.target.result;
@@ -659,6 +663,33 @@ const RecordStore = (() => {
     return (await buildCardIndex()).get((target || '').trim().toLowerCase()) || null;
   }
 
+  // ══ Images ═══════════════════════════════════════════════════════
+  //
+  // Card portraits and maps. Stored LOCALLY as blobs in their own
+  // IndexedDB store, and mirrored to R2 through the worker.
+  //
+  // Why not in the card record: a record is JSON that gets read on
+  // every tree render and pushed to KV on every edit. A 200KB portrait
+  // riding along with it would be re-serialized constantly, and KV
+  // values are the wrong home for binary anyway — that is exactly what
+  // R2 is for, and the routes have been sitting unused since the
+  // worker was written.
+  //
+  // The card keeps only `imageKey`, a string. The bytes live here.
+
+  async function putImage(cardId, blob) {
+    const ok = await tx(IMAGES, 'readwrite', st => st.put(blob, cardId));
+    return ok;
+  }
+
+  async function getImage(cardId) {
+    return await read(IMAGES, s => wrap(s.get(cardId)));
+  }
+
+  async function deleteImage(cardId) {
+    return tx(IMAGES, 'readwrite', st => st.delete(cardId));
+  }
+
   // ══ Search ═══════════════════════════════════════════════════════
   //
   // One pass over everything: scene titles, synopses and prose, card
@@ -887,6 +918,7 @@ const RecordStore = (() => {
     deleteBook, deletePart, deleteChapter, deleteScene,
     // Cards
     createCard, findCardByName, CARD_TYPES,
+    putImage, getImage, deleteImage,
     extractLinks, buildCardIndex, linkGraph, resolveLink, LINK_RE,
     // Events
     createEvent, getTimeline, eventsForCard, PRECISIONS,
