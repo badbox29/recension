@@ -39,7 +39,13 @@
     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h9"/></svg>
   </button>
 
-  <span class="wordmark">Recension</span>
+  <!-- The current project, and how you change it. Kept visible rather
+       than buried in settings: once there's more than one, which one
+       you're in is the single most important thing on screen. -->
+  <button class="wordmark" id="btn-project" aria-haspopup="menu">
+    <span id="project-name">Recension</span>
+    <svg viewBox="0 0 20 20" aria-hidden="true" class="wordmark-caret"><path d="M6 8l4 4 4-4"/></svg>
+  </button>
 
   <div class="bar-end">
     <button class="icon-btn" id="btn-search" aria-label="Search (Ctrl+K)">
