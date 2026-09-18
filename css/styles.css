@@ -2516,3 +2516,170 @@ html.dark {
   line-height: 1.5;
 }
 .opt-list dd strong { color: var(--ink); font-weight: 400; }
+
+/* ══ Snowflake ═════════════════════════════════════════════════════
+   Ten steps, none of them required. Styled as writing surfaces rather
+   than as a form: what you put here is prose, and it should look like
+   somewhere prose goes. */
+
+.plan { width: 100%; max-width: 44rem; margin: 0 auto; padding: 2rem 1.5rem 6rem; }
+
+.sf-head { padding-bottom: 1.25rem; margin-bottom: 1.75rem; border-bottom: 1px solid var(--rule); }
+.sf-n {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--rubric);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  margin-bottom: 0.1875rem;
+}
+.sf-head h1 { margin: 0; font-family: var(--prose); font-size: var(--t-xl); font-weight: 600; }
+.sf-blurb { margin: 0.25rem 0 0; font-size: var(--t-sm); color: var(--ink-soft); }
+
+.sf-body { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.sf-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.sf-field > span { font-size: var(--t-xs); color: var(--ink-faint); }
+.sf-field textarea,
+.sf-prose {
+  font-family: var(--prose);
+  font-size: var(--prose-size, 1.0625rem);
+  line-height: var(--prose-leading, 1.72);
+  width: 100%;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 0.25rem 0 0.4375rem;
+  resize: none;
+  overflow: hidden;
+}
+.sf-field textarea:focus, .sf-prose:focus { outline: none; border-bottom-color: var(--ink-faint); }
+.sf-field textarea::placeholder, .sf-prose::placeholder { color: var(--ink-faint); }
+
+/* A locked prose box is a view of the sentences below it, not an
+   input — it should not invite typing. */
+.sf-prose[readonly] { color: var(--ink-soft); border-bottom-style: dashed; }
+
+.sf-swain { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.75rem 1.25rem; }
+
+/* The split sentences. Indented under the prose they came from, so the
+   relationship reads as magnification rather than as two lists. */
+.sf-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--rule-soft);
+  margin-top: 0.25rem;
+}
+.sf-part { display: flex; align-items: flex-start; gap: 0.625rem; }
+.sf-role {
+  flex: none;
+  width: 4.5rem;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  padding-top: 0.375rem;
+}
+.sf-part textarea {
+  flex: 1;
+  font-family: var(--prose);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 0.25rem 0;
+  resize: none;
+  overflow: hidden;
+}
+.sf-part textarea:focus { outline: none; border-bottom-color: var(--ink-faint); }
+
+/* One element of the level above, with what expands it. */
+.sf-beat {
+  border-left: 2px solid var(--rule);
+  padding-left: 0.875rem;
+}
+.sf-beat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: var(--t-sm);
+}
+.sf-level {
+  flex: none;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.sf-beat-text { font-family: var(--prose); color: var(--ink-soft); }
+.sf-card-name {
+  font-family: var(--prose);
+  font-size: var(--t-md);
+  font-weight: 600;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.sf-card-name:hover { color: var(--rubric); }
+
+.sf-scene {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  padding: 0.25rem 0.375rem;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.sf-scene:hover { background: var(--rule-soft); color: var(--ink); }
+.sf-pov { font-size: var(--t-xs); color: var(--ink-faint); margin-left: auto; }
+
+.sf-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule-soft);
+}
+
+/* ── Plan rail ─────────────────────────────────────────────────── */
+
+.plan-row { padding-left: 0.375rem; align-items: baseline; }
+.plan-n {
+  flex: none;
+  width: 1.25rem;
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+.plan-row[aria-current="true"] .plan-n { color: var(--rubric); }
+
+/* What's been done, never "complete" — nothing in this method is. */
+.plan-done {
+  flex: none;
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+
+@media (max-width: 44rem) {
+  .plan { padding: 1.5rem 1rem 6rem; }
+  .sf-swain { grid-template-columns: 1fr; }
+  .sf-part { flex-direction: column; gap: 0.125rem; }
+  .sf-role { width: auto; padding-top: 0; }
+}
