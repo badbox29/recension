@@ -2498,3 +2498,21 @@ html.dark {
   stroke-width: 3px;
   stroke-linejoin: round;
 }
+
+/* Option list in Settings. A definition list because that is what it
+   is — three named things and what each one does. Three buttons with
+   no explanation is how people export the wrong thing. */
+.opt-list { margin: 0 0 1rem; }
+.opt-list dt {
+  font-family: var(--prose);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  margin-top: 0.625rem;
+}
+.opt-list dd {
+  margin: 0.125rem 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.opt-list dd strong { color: var(--ink); font-weight: 400; }
