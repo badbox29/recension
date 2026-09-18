@@ -53,7 +53,9 @@
  *
  * ── RECORD SHAPES ────────────────────────────────────────────
  *
- *   book    { id, title, subtitle, order, createdAt, updatedAt }
+ *   project { id, title, order, createdAt, updatedAt }
+ *           The working set. Books, cards and events belong to one.
+ *   book    { id, projectId, title, subtitle, order, createdAt, updatedAt }
  *           A WORK — one novel. The type name stays `book` because that is
  *           what existing records and KV keys already say; renaming it
  *           would mean migrating every key for a label change.
@@ -97,7 +99,13 @@ const RecordStore = (() => {
   const INDEX      = 'index';
   const IMAGES     = 'images';
 
-  const TYPES = ['book', 'part', 'chapter', 'scene', 'card', 'event'];
+  const TYPES = ['project', 'book', 'part', 'chapter', 'scene', 'card', 'event'];
+
+  // Records that belong to a project rather than to a book. A project
+  // is the working set: its books, its cast, its history. Cards and
+  // events sit here rather than on a book so a shared universe — two
+  // novels, one set of characters — works without duplicating anyone.
+  const PROJECT_SCOPED = ['book', 'card', 'event'];
 
   let _dbPromise = null;
 
@@ -220,12 +228,18 @@ const RecordStore = (() => {
     } else if (type === 'book') {
       e.t = rec.title || '';
       e.o = rec.order || 0;
+      e.j = rec.projectId || '';
+    } else if (type === 'project') {
+      e.t = rec.title || '';
+      e.o = rec.order || 0;
     } else if (type === 'card') {
       e.t = rec.name || '';
       e.s = rec.cardType || '';
+      e.j = rec.projectId || '';
     } else if (type === 'event') {
       e.t = rec.title || '';
       e.s = rec.start || '';
+      e.j = rec.projectId || '';
     }
     return e;
   }
@@ -361,12 +375,109 @@ const RecordStore = (() => {
     return arr.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   }
 
+  // ══ Projects ═════════════════════════════════════════════════════
+
+  let _currentProject = null;
+
+  function currentProject() { return _currentProject; }
+  function setCurrentProject(id) { _currentProject = id || null; }
+
+  async function createProject(title) {
+    const id = newId();
+    const all = await getAll('project');
+    const ok = await put('project', id, {
+      id, title: title || 'Untitled project', order: nextOrder(all),
+    });
+    return ok ? id : null;
+  }
+
+  async function listProjects() {
+    return sortByOrder(Object.values(await getAll('project')));
+  }
+
+  // getAllIn(type) — records of a project-scoped type belonging to the
+  // current project. Everything that draws the rail, the grid, the map
+  // or the timeline goes through here, so a second project can never
+  // bleed into the first one's views.
+  async function getAllIn(type) {
+    const all = await getAll(type);
+    if (!PROJECT_SCOPED.includes(type) || !_currentProject) return all;
+    const out = {};
+    for (const [id, rec] of Object.entries(all)) {
+      if ((rec.projectId || null) === _currentProject) out[id] = rec;
+    }
+    return out;
+  }
+
+  /**
+   * ensureProject() — one-time migration, silent.
+   *
+   * Everything written before projects existed has no projectId. Rather
+   * than asking about it, adopt it: create one project named after the
+   * first book and assign every orphan to it. Runs once — after it, any
+   * record without a projectId is genuinely new and gets the current
+   * one at creation.
+   *
+   * Returns the id to open.
+   */
+  async function ensureProject() {
+    const projects = await listProjects();
+
+    const orphans = { book: [], card: [], event: [] };
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (!rec.projectId) orphans[type].push(rec);
+      }
+    }
+    const strays = orphans.book.length + orphans.card.length + orphans.event.length;
+
+    if (!projects.length && !strays) {
+      // Genuinely empty account. One project so there is somewhere to
+      // put the first book.
+      const id = await createProject('My writing');
+      setCurrentProject(id);
+      return id;
+    }
+
+    let home = projects[0]?.id;
+    if (strays && !home) {
+      const name = sortByOrder(orphans.book)[0]?.title || 'My writing';
+      home = await createProject(name);
+    }
+
+    if (strays) {
+      for (const type of PROJECT_SCOPED) {
+        for (const rec of orphans[type]) {
+          await _write(type, rec.id, { ...rec, projectId: home });
+          if (typeof Sync !== 'undefined') Sync.markDirty(type, rec.id);
+        }
+      }
+    }
+
+    setCurrentProject(home);
+    return home;
+  }
+
+  async function deleteProject(id) {
+    // Detach rather than destroy, as everywhere else — the books and
+    // cards survive and can be moved into another project. Only a
+    // scene deletion is allowed to lose words.
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (rec.projectId === id) await put(type, rec.id, { ...rec, projectId: null });
+      }
+    }
+    return remove('project', id);
+  }
+
   // ── Manuscript tree ───────────────────────────────────────────────
 
   async function createBook(title) {
     const id = newId();
-    const books = await getAll('book');
-    const ok = await put('book', id, { id, title: title || 'Untitled', order: nextOrder(books) });
+    const books = await getAllIn('book');
+    const ok = await put('book', id, {
+      id, projectId: _currentProject, title: title || 'Untitled', order: nextOrder(books),
+    });
     return ok ? id : null;
   }
 
@@ -434,12 +545,15 @@ const RecordStore = (() => {
    */
   async function getTree() {
     const idx = await getIndex();
+    // Books carry the project in their index entry (`j`), so the tree
+    // can be scoped without reading a single record body.
+    const mine = id => !_currentProject || (idx[`book:${id}`]?.j || null) === _currentProject;
     const books = [], parts = [], chapters = [], scenes = [];
 
     for (const [k, e] of Object.entries(idx)) {
       const [type, id] = splitKey(k);
       const base = { id, title: e.t, order: e.o || 0, updatedAt: e.u };
-      if (type === 'book')         books.push(base);
+      if (type === 'book')       { if (mine(id)) books.push(base); }
       else if (type === 'part')    parts.push({ ...base, bookId: e.p || null });
       else if (type === 'chapter') chapters.push({
         ...base,
@@ -458,6 +572,12 @@ const RecordStore = (() => {
       if (c.partId) c.bookId = partById[c.partId]?.bookId || null;
     }
 
+    // Chapters whose book belongs to another project are dropped here
+    // rather than being filtered at every call site. Scenes follow
+    // their chapters, so filtering chapters is enough.
+    const bookIds = new Set(books.map(b => b.id));
+    const visible = c => !_currentProject || !c.bookId || bookIds.has(c.bookId);
+
     const withScenes = c => ({
       ...c, scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
     });
@@ -465,7 +585,7 @@ const RecordStore = (() => {
       (n, c) => n + c.scenes.reduce((m, s) => m + (s.wordCount || 0), 0), 0);
 
     const works = sortByOrder(books).map(b => {
-      const mine = chapters.filter(c => c.bookId === b.id);
+      const mine = chapters.filter(c => c.bookId === b.id && visible(c));
       const workParts = sortByOrder(parts.filter(p => p.bookId === b.id)).map(p => {
         const inPart = sortByOrder(mine.filter(c => c.partId === p.id)).map(withScenes);
         return { ...p, chapters: inPart, words: wordsOf(inPart) };
@@ -508,7 +628,7 @@ const RecordStore = (() => {
     if (!CARD_TYPES.includes(cardType)) return null;
     const id = newId();
     const ok = await put('card', id, {
-      id, cardType, name: name || 'Untitled',
+      id, projectId: _currentProject, cardType, name: name || 'Untitled',
       aka: [], fields: {}, tags: [], body: '', imageKey: null,
     });
     return ok ? id : null;
@@ -519,7 +639,7 @@ const RecordStore = (() => {
   async function findCardByName(name) {
     if (!name) return null;
     const needle = name.trim().toLowerCase();
-    const cards = await getAll('card');
+    const cards = await getAllIn('card');
     for (const c of Object.values(cards)) {
       if ((c.name || '').trim().toLowerCase() === needle) return c;
       if ((c.aka || []).some(a => (a || '').trim().toLowerCase() === needle)) return c;
@@ -545,7 +665,7 @@ const RecordStore = (() => {
     if (!PRECISIONS.includes(precision)) precision = 'day';
     const id = newId();
     const ok = await put('event', id, {
-      id, title: title || 'Untitled Event', kind,
+      id, projectId: _currentProject, title: title || 'Untitled Event', kind,
       start: start || '', end, precision,
       participants, location, sceneRef, body: '',
     });
@@ -561,7 +681,7 @@ const RecordStore = (() => {
    * coerced to a false precision.
    */
   async function getTimeline({ participantId = null } = {}) {
-    const events = Object.values(await getAll('event'));
+    const events = Object.values(await getAllIn('event'));
     const filtered = participantId
       ? events.filter(e => (e.participants || []).includes(participantId))
       : events;
@@ -573,7 +693,7 @@ const RecordStore = (() => {
   // participants are stored as card ids rather than names: a rename costs
   // nothing and the lookup never misses on a nickname.
   async function eventsForCard(cardId) {
-    const events = Object.values(await getAll('event'));
+    const events = Object.values(await getAllIn('event'));
     return events
       .filter(e => (e.participants || []).includes(cardId))
       .sort((a, b) => String(a.start).localeCompare(String(b.start)));
@@ -610,7 +730,7 @@ const RecordStore = (() => {
   // card set per link.
   async function buildCardIndex() {
     const index = new Map();
-    for (const c of Object.values(await getAll('card'))) {
+    for (const c of Object.values(await getAllIn('card'))) {
       const keys = [c.name, ...(c.aka || [])];
       for (const k of keys) {
         const key = (k || '').trim().toLowerCase();
@@ -748,9 +868,12 @@ const RecordStore = (() => {
       if (score) results.push({ type, id, title, context, snippet: snip, score });
     };
 
+    // Current project only. A result from another project would either
+    // open something you can't see or switch context underneath you;
+    // neither is what a search box should do.
     const [books, parts, chapters, scenes, cards, events] = await Promise.all([
-      getAll('book'), getAll('part'), getAll('chapter'),
-      getAll('scene'), getAll('card'), getAll('event'),
+      getAllIn('book'), getAll('part'), getAll('chapter'),
+      getAll('scene'), getAllIn('card'), getAllIn('event'),
     ]);
 
     // Chapter titles, so a scene result can say where it lives.
@@ -914,6 +1037,8 @@ const RecordStore = (() => {
     // Core
     get, getAll, getIndex, put, putLocal, remove, removeLocal,
     // Tree
+    createProject, listProjects, deleteProject, ensureProject,
+    currentProject, setCurrentProject, getAllIn, PROJECT_SCOPED,
     createBook, createPart, createChapter, createScene, getTree, allChapters,
     deleteBook, deletePart, deleteChapter, deleteScene,
     // Cards

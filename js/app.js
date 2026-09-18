@@ -75,13 +75,13 @@ function defaultData() {
       address: '', email: '', phone: '',
       agent: '', agentContact: '', copyright: '',
     },
-    // Which scene to reopen on launch. This is all the tab bar was
-    // really providing: a second navigation system beside the rail,
-    // showing five truncated titles where the rail shows the whole
-    // book with word counts. On a phone it collapsed to an underscore
-    // and an X.
-    openSceneId: null,
-    tocState:  { collapsedIds: [] },
+    // Which project to open at launch, and where you were inside each
+    // one. Position is per project on purpose: reopening Angel Six-Two
+    // should land where you were in Angel Six-Two, not wherever you
+    // last looked in something else.
+    lastProjectId: null,
+    places: {},           // projectId → { openSceneId, section, collapsedIds }
+
     typewriter: false,
   };
 }
@@ -98,12 +98,16 @@ function mergeData(raw) {
     // this path is hit on every pull. Keep what we already have.
     userToken: raw?.userToken || App.data?.userToken || d.userToken,
     author: { ...d.author, ...(raw.author && typeof raw.author === 'object' ? raw.author : {}) },
-    // Accept the old tabState shape so an account written by an earlier
-    // version still reopens the right scene.
-    openSceneId: raw?.openSceneId ?? raw?.tabState?.activeId ?? null,
-    tocState: (raw.tocState && typeof raw.tocState === 'object')
-      ? { collapsedIds: Array.isArray(raw.tocState.collapsedIds) ? raw.tocState.collapsedIds : [] }
-      : d.tocState,
+    lastProjectId: raw?.lastProjectId ?? null,
+    // Carry pre-project state forward: the old account-level scene and
+    // collapse state become the first project's place, assigned once
+    // the migration tells us which project that is.
+    places: (raw?.places && typeof raw.places === 'object') ? raw.places : {},
+    _legacyPlace: {
+      openSceneId: raw?.openSceneId ?? raw?.tabState?.activeId ?? null,
+      collapsedIds: Array.isArray(raw?.tocState?.collapsedIds) ? raw.tocState.collapsedIds : [],
+    },
+
   };
 }
 
@@ -123,8 +127,9 @@ function accountForSync() {
     // removed from the sign-up wizard (the author block below is the real
     // identity), so there is nothing left to replicate.
     author: d.author,
-    openSceneId: d.openSceneId,
-    tocState: d.tocState,
+    lastProjectId: d.lastProjectId,
+    places: d.places,
+
     typewriter: d.typewriter,
   };
 }
@@ -282,15 +287,135 @@ function renderMarkdown(md, index) {
   }
 }
 
+// ══ Projects ═══════════════════════════════════════════════════════
+//
+// A project is the working set: its books, its cast, its history.
+// Cards and events belong to it rather than to a book, so a shared
+// universe — two novels, one set of characters — works without
+// duplicating anyone.
+//
+// Switching flushes to DISK and fires a sync without waiting on it.
+// Blocking on the network would be the only place in the app that
+// does, it would make switching impossible offline, and it would imply
+// a guarantee we can't make. Sync is per record anyway: a dirty scene
+// from a closed project is still in the dirty set and still goes up.
+
+function place() {
+  const id = RecordStore.currentProject();
+  if (!id) return {};
+  App.data.places[id] ||= { openSceneId: null, section: 'manuscript', collapsedIds: [] };
+  return App.data.places[id];
+}
+
+function savePlace(patch) {
+  const id = RecordStore.currentProject();
+  if (!id) return;
+  App.data.places[id] = { ...place(), ...patch };
+  saveLocal();
+}
+
+async function renderProjectName() {
+  const list = await RecordStore.listProjects();
+  const cur = list.find(p => p.id === RecordStore.currentProject());
+  $('project-name').textContent = cur?.title || 'Recension';
+  $('btn-project').setAttribute('aria-label', `Project: ${cur?.title || 'none'}`);
+}
+
+async function openProjectMenu(anchor) {
+  closeRowMenu();
+  const menu = el('div', 'row-menu project-menu');
+  const list = await RecordStore.listProjects();
+  const cur = RecordStore.currentProject();
+
+  for (const p of list) {
+    const b = el('button', p.id === cur ? 'on' : null, p.title);
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      closeRowMenu();
+      if (p.id !== cur) switchProject(p.id);
+    });
+    menu.append(b);
+  }
+
+  menu.append(el('div', 'menu-rule'));
+
+  const add = el('button', null, 'New project…');
+  add.addEventListener('click', async e => {
+    e.stopPropagation();
+    closeRowMenu();
+    const name = await askName('New project', 'Title');
+    if (!name) return;
+    const id = await RecordStore.createProject(name);
+    if (id) switchProject(id);
+  });
+  menu.append(add);
+
+  if (list.length > 1) {
+    const del = el('button', 'danger', 'Delete this project…');
+    del.addEventListener('click', e => {
+      e.stopPropagation();
+      closeRowMenu();
+      const name = list.find(p => p.id === cur)?.title || 'this project';
+      showConfirm(
+        `Delete "${name}"? Its books and cards stay — they become unassigned, ` +
+        `and you can move them into another project.`,
+        async () => {
+          await RecordStore.deleteProject(cur);
+          delete App.data.places[cur];
+          const rest = await RecordStore.listProjects();
+          switchProject(rest[0]?.id || await RecordStore.createProject('My writing'));
+        });
+    });
+    menu.append(del);
+  }
+
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, r.left)}px`;
+  _menu = menu;
+}
+
+async function switchProject(id) {
+  // Disk first. The debounce may not have fired and the editor holds
+  // text that isn't in IndexedDB yet.
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  // Network afterwards, unawaited. Nothing is lost if it fails — the
+  // dirty set outlives the switch.
+  Sync.flush();
+
+  RecordStore.setCurrentProject(id);
+  App.data.lastProjectId = id;
+  saveLocal();
+
+  App.activeScene = App.activeCard = App.activeEvent = null;
+  App.view = 'edit';
+  App.readReturn = null;
+  invalidateCardIndex();
+  for (const h of ['scene', 'card-edit', 'event-edit', 'readview',
+                   'timeline-wrap', 'grid-wrap', 'board-wrap', 'map-wrap']) $(h).hidden = true;
+
+  await renderProjectName();
+  await railSection(place().section || 'manuscript');
+
+  const scene = place().openSceneId;
+  if (scene && await RecordStore.get('scene', scene)) await openScene(scene);
+  else showEmpty();
+  refreshSyncState();
+}
+
 // ── Contents tree ──────────────────────────────────────────────────
 
-function isCollapsed(id) { return App.data.tocState.collapsedIds.includes(id); }
+function isCollapsed(id) { return (place().collapsedIds || []).includes(id); }
 
 function setCollapsed(id, collapsed) {
-  const set = new Set(App.data.tocState.collapsedIds);
+  const set = new Set(place().collapsedIds || []);
   collapsed ? set.add(id) : set.delete(id);
-  App.data.tocState.collapsedIds = [...set];
-  saveAccount();
+  savePlace({ collapsedIds: [...set] });
+  if (typeof Sync !== 'undefined') Sync.markAccountDirty();
 }
 
 function fmtWords(n) {
@@ -578,14 +703,14 @@ function confirmDelete(kind, id, title) {
     if (kind === 'chapter') await RecordStore.deleteChapter(id);
     if (kind === 'scene') {
       await RecordStore.deleteScene(id);
-      if (App.data.openSceneId === id) {
+      if (place().openSceneId === id) {
         App.activeScene = null;
-        App.data.openSceneId = null;
+        savePlace({ openSceneId: null });
       }
       saveAccount();
     }
     await renderTree();
-    App.data.openSceneId ? openScene(App.data.openSceneId) : showEmpty();
+    place().openSceneId ? openScene(place().openSceneId) : showEmpty();
     refreshSyncState();
   });
 }
@@ -744,7 +869,7 @@ function sceneRow(sc, deep = false) {
     title: sc.title,
     figure: fmtWords(sc.wordCount),
     status: sc.status && sc.status !== 'draft' ? sc.status : null,
-    current: App.data.openSceneId === sc.id,
+    current: place().openSceneId === sc.id,
     onOpen: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
   });
 }
@@ -907,9 +1032,8 @@ let _spyRaf = null;
 function updateSpy() {
   if (App.view !== 'read') return;
   const centred = centredScene();
-  if (!centred || centred === App.data.openSceneId) return;
-  App.data.openSceneId = centred;
-  saveLocal();              // position, not content — no need to sync it
+  if (!centred || centred === place().openSceneId) return;
+  savePlace({ openSceneId: centred });              // position, not content — no need to sync it
   renderTree();
 }
 
@@ -981,10 +1105,10 @@ function defaultReadScope() {
 function toggleRead() {
   if (App.view === 'read') {
     App.readReturn
-      ? editFromRead(App.data.openSceneId)
+      ? editFromRead(place().openSceneId)
       : exitRead();
   } else {
-    openRead(defaultReadScope(), App.data.openSceneId);
+    openRead(defaultReadScope(), place().openSceneId);
   }
 }
 
@@ -992,7 +1116,7 @@ function exitRead() {
   App.view = 'edit';
   $('readview').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
-  App.data.openSceneId ? openScene(App.data.openSceneId) : showEmpty();
+  place().openSceneId ? openScene(place().openSceneId) : showEmpty();
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────
@@ -1205,7 +1329,7 @@ async function openScene(id) {
   if (!sc) { showToast('That scene is gone.'); await renderTree(); return; }
 
   App.activeScene = sc;
-  App.data.openSceneId = id;
+  savePlace({ openSceneId: id });
   saveAccount();
 
   App.view = 'edit';
@@ -2078,6 +2202,7 @@ const CARD_TYPE_LABEL = {
 
 function railSection(name) {
   App.section = name;
+  savePlace({ section: name });
   for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
     b.setAttribute('aria-selected', String(b.dataset.section === name));
   $('toc').hidden         = name !== 'manuscript';
@@ -2107,7 +2232,7 @@ async function renderCards() {
                        .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
 
     // Collapse state is keyed on a synthetic id so it rides along in the
-    // same tocState the parts and chapters use — one mechanism, one place
+    // same place record the parts and chapters use — one mechanism,
     // it's remembered.
     const groupId = `cards:${type}`;
     const collapsed = isCollapsed(groupId);
@@ -2807,10 +2932,12 @@ async function applySignIn(data, isNew, { eraseLocal } = {}) {
   if (!Auth.isGuest() && App.data.workerUrl) Sync.start();
 
   // 4. Redraw everything, not just the tree — the rail may be showing
-  //    cards or events, and those changed too.
-  await railSection(App.section || 'manuscript');
+  //    cards or events, and those changed too. The project has to be
+  //    re-established first: the account that just arrived may name one
+  //    this device has never seen.
+  await openLastProject();
 
-  const active = App.data.openSceneId;
+  const active = place().openSceneId;
   if (active && await RecordStore.get('scene', active)) await openScene(active);
   else showEmpty();
 
@@ -4615,6 +4742,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('scrim').addEventListener('click', closeRail);
   $('btn-settings').addEventListener('click', openSettings);
   $('btn-search').addEventListener('click', openSearch);
+  $('btn-project').addEventListener('click', e => {
+    e.stopPropagation();
+    openProjectMenu($('btn-project'));
+  });
   $('search-input').addEventListener('input', scheduleSearch);
   $('search-overlay').addEventListener('mousedown', e => {
     if (e.target === $('search-overlay')) closeSearch();
@@ -4859,7 +4990,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ── Start ───────────────────────────────────────────────────────
 
-  await renderTree();
+  await openLastProject();
 
   if (!Auth.isGuest() && App.data.workerUrl) {
     Sync.start();
@@ -4871,9 +5002,45 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (typeof Auth.bootCheck === 'function') await Auth.bootCheck();
 
-  const active = App.data.openSceneId;
+  const active = place().openSceneId;
   if (active && await RecordStore.get('scene', active)) openScene(active);
   else showEmpty();
 
   refreshSyncState();
 });
+
+/**
+ * openLastProject() — establish the working set before anything draws.
+ *
+ * ensureProject() runs the one-time migration for content written
+ * before projects existed: it creates a project named after the first
+ * book and adopts every record without one. Silent by design — you
+ * shouldn't have to answer a question about a change you didn't ask
+ * for, and the app looks identical afterwards.
+ */
+async function openLastProject() {
+  const home = await RecordStore.ensureProject();
+
+  // Reopen the last project if it still exists; otherwise fall back to
+  // whatever the migration settled on.
+  const list = await RecordStore.listProjects();
+  const wanted = App.data.lastProjectId;
+  const id = list.some(p => p.id === wanted) ? wanted : home;
+  RecordStore.setCurrentProject(id);
+  App.data.lastProjectId = id;
+
+  // Pre-project accounts kept one scene and one collapse set at the
+  // account level. Hand them to the project that just adopted their
+  // content, so the first launch lands where the last one left off.
+  if (App.data._legacyPlace && !App.data.places[id]) {
+    const { openSceneId, collapsedIds } = App.data._legacyPlace;
+    if (openSceneId || collapsedIds?.length) {
+      App.data.places[id] = { openSceneId, section: 'manuscript', collapsedIds };
+    }
+  }
+  delete App.data._legacyPlace;
+  saveLocal();
+
+  await renderProjectName();
+  await railSection(place().section || 'manuscript');
+}
