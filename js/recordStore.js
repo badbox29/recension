@@ -53,8 +53,15 @@
  *
  * ── RECORD SHAPES ────────────────────────────────────────────
  *
- *   project { id, title, order, createdAt, updatedAt }
- *           The working set. Books, cards and events belong to one.
+ *   project { id, title, order, createdAt, updatedAt, snowflake }
+ *           The working set. Books, cards, events and beats belong to
+ *           one. `snowflake` holds the step-1 fields and which steps
+ *           are switched on.
+ *   beat    { id, projectId, parentId, level, text, order }
+ *           One link in the Snowflake expansion. Level 2 is a sentence
+ *           of the paragraph, level 3 a paragraph expanding it, level
+ *           4 a page expanding that. parentId is the element one level
+ *           up that this one expands — that parentage IS the method.
  *   book    { id, projectId, title, subtitle, order, createdAt, updatedAt }
  *           A WORK — one novel. The type name stays `book` because that is
  *           what existing records and KV keys already say; renaming it
@@ -99,13 +106,13 @@ const RecordStore = (() => {
   const INDEX      = 'index';
   const IMAGES     = 'images';
 
-  const TYPES = ['project', 'book', 'part', 'chapter', 'scene', 'card', 'event'];
+  const TYPES = ['project', 'book', 'part', 'chapter', 'scene', 'card', 'event', 'beat'];
 
   // Records that belong to a project rather than to a book. A project
   // is the working set: its books, its cast, its history. Cards and
   // events sit here rather than on a book so a shared universe — two
   // novels, one set of characters — works without duplicating anyone.
-  const PROJECT_SCOPED = ['book', 'card', 'event'];
+  const PROJECT_SCOPED = ['book', 'card', 'event', 'beat'];
 
   let _dbPromise = null;
 
@@ -232,6 +239,12 @@ const RecordStore = (() => {
     } else if (type === 'project') {
       e.t = rec.title || '';
       e.o = rec.order || 0;
+    } else if (type === 'beat') {
+      e.t = (rec.text || '').slice(0, 80);
+      e.o = rec.order || 0;
+      e.p = rec.parentId || '';
+      e.s = String(rec.level || 2);
+      e.j = rec.projectId || '';
     } else if (type === 'card') {
       e.t = rec.name || '';
       e.s = rec.cardType || '';
@@ -468,6 +481,111 @@ const RecordStore = (() => {
       }
     }
     return remove('project', id);
+  }
+
+  // ══ Snowflake ════════════════════════════════════════════════════
+  //
+  // Ingermanson's method models a story at increasing magnification:
+  // a sentence, then a paragraph, then a paragraph per sentence, then
+  // a page per paragraph. Every element expands exactly one element
+  // from the level above, and that parentage is the whole point — it
+  // is what makes step 4 a magnification of step 2 rather than a
+  // second, unrelated document.
+  //
+  // So beats are a tree, not four text fields. A tool that stored the
+  // four levels as four blobs would be a form; this can answer which
+  // paragraph expands which sentence, and which scenes dramatize
+  // which beat.
+
+  const BEAT_LEVELS = { 2: 'sentence', 3: 'paragraph', 4: 'page' };
+
+  // The five Ingermanson names for the level-2 sentences. Five is his
+  // number, not a law: a sixth sentence gets a beat and no label
+  // rather than being crammed into the fifth.
+  const BEAT_ROLES = ['Setup', 'Disaster', 'Disaster', 'Disaster', 'Ending'];
+
+  async function createBeat({ parentId = null, level = 2, text = '', order = null } = {}) {
+    const id = newId();
+    const siblings = Object.fromEntries(
+      Object.entries(await getAllIn('beat'))
+        .filter(([, b]) => (b.parentId || null) === (parentId || null) && b.level === level));
+    const ok = await put('beat', id, {
+      id, projectId: _currentProject, parentId: parentId || null, level, text,
+      order: order ?? nextOrder(siblings),
+    });
+    return ok ? id : null;
+  }
+
+  // beatsAt(level, parentId) — one rung of the ladder, in order.
+  async function beatsAt(level, parentId = undefined) {
+    const all = Object.values(await getAllIn('beat')).filter(b => b.level === level);
+    const scoped = parentId === undefined
+      ? all : all.filter(b => (b.parentId || null) === (parentId || null));
+    return sortByOrder(scoped);
+  }
+
+  /**
+   * beatTree() — the expansion as a nested structure, with the scenes
+   * that dramatize each beat attached.
+   *
+   * The scene counts are what make the plan checkable against the
+   * book: a beat with no scenes is structure you planned and haven't
+   * written, and a beat carrying 18,000 words is a paragraph that got
+   * away from you.
+   */
+  async function beatTree() {
+    const beats = Object.values(await getAllIn('beat'));
+    const scenes = Object.values(await getAll('scene'));
+
+    const byBeat = {};
+    for (const sc of scenes) {
+      if (!sc.beatId) continue;
+      (byBeat[sc.beatId] ||= []).push(sc);
+    }
+
+    const build = (level, parentId) => sortByOrder(
+      beats.filter(b => b.level === level && (b.parentId || null) === (parentId || null))
+    ).map(b => {
+      const mine = byBeat[b.id] || [];
+      const children = level < 4 ? build(level + 1, b.id) : [];
+      return {
+        ...b,
+        children,
+        scenes: mine,
+        words: mine.reduce((n, s) => n + (s.wordCount || 0), 0) +
+               children.reduce((n, c) => n + c.words, 0),
+        sceneCount: mine.length + children.reduce((n, c) => n + c.sceneCount, 0),
+      };
+    });
+
+    return build(2, null);
+  }
+
+  // Scenes that serve no beat. Sometimes exactly right — the book
+  // found something the plan didn't — and sometimes drift worth
+  // noticing. Either way it should be visible rather than inferred.
+  async function unplannedScenes() {
+    const tree = await getTree();
+    const out = [];
+    for (const ch of allChapters(tree)) {
+      for (const sc of ch.scenes) {
+        const rec = await get('scene', sc.id);
+        if (rec && !rec.beatId) out.push({ ...sc, chapter: ch.title });
+      }
+    }
+    return out;
+  }
+
+  async function deleteBeat(id) {
+    // Children are detached, not destroyed, and scenes keep their text
+    // — the same rule as everywhere: only deleting a scene loses words.
+    for (const b of Object.values(await getAllIn('beat'))) {
+      if (b.parentId === id) await put('beat', b.id, { ...b, parentId: null });
+    }
+    for (const sc of Object.values(await getAll('scene'))) {
+      if (sc.beatId === id) await put('scene', sc.id, { ...sc, beatId: null });
+    }
+    return remove('beat', id);
   }
 
   // ── Manuscript tree ───────────────────────────────────────────────
@@ -1037,6 +1155,8 @@ const RecordStore = (() => {
     // Core
     get, getAll, getIndex, put, putLocal, remove, removeLocal,
     // Tree
+    createBeat, beatsAt, beatTree, unplannedScenes, deleteBeat,
+    BEAT_LEVELS, BEAT_ROLES,
     createProject, listProjects, deleteProject, ensureProject,
     currentProject, setCurrentProject, getAllIn, PROJECT_SCOPED,
     createBook, createPart, createChapter, createScene, getTree, allChapters,

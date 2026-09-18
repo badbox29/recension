@@ -954,6 +954,7 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
   $('map-wrap').hidden = true;
+  $('plan-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'true');
 
   await renderReadView();
@@ -1344,6 +1345,7 @@ async function openScene(id) {
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
   $('map-wrap').hidden = true;
+  $('plan-wrap').hidden = true;
   $('btn-read').setAttribute('aria-pressed', 'false');
   $('empty').hidden = true;
   $('scene').hidden = false;
@@ -2231,6 +2233,679 @@ async function exportBackup({ projectId = null } = {}) {
   showToast(single ? 'Project exported.' : 'Backup downloaded.');
 }
 
+// ══ Snowflake ══════════════════════════════════════════════════════
+//
+// Randy Ingermanson's method: a story at increasing magnification. A
+// sentence, then a paragraph, then a paragraph for each sentence of
+// that paragraph, then a page for each of those.
+//
+// NOT A WIZARD, though it has one. Ingermanson is explicit that the
+// steps loop — after step 4 you go back and fix step 2; after step 8
+// you find step 3 was wrong. A pure wizard fights that, and the
+// friction lands exactly when the method is working. So the steps are
+// a view you can open at any point, and "Guide me" is a mode over the
+// same records that walks them in order.
+//
+// NOTHING IS REQUIRED. Steps can be switched off per project; an
+// unused step is hidden, never deleted, so turning it back on returns
+// whatever was in it.
+
+const SNOWFLAKE_STEPS = [
+  { n: 1,  key: 'sentence',  title: 'Story in a sentence',
+    blurb: 'One or two sentences. Swain\u2019s five parts, if they help.' },
+  { n: 2,  key: 'paragraph', title: 'Story in a paragraph',
+    blurb: 'Five sentences: the setup, three disasters, and the ending.' },
+  { n: 3,  key: 'sheets',    title: 'Character sheets',
+    blurb: 'A sheet for each important character. Creates cards.' },
+  { n: 4,  key: 'expand2',   title: 'Paragraphs from sentences',
+    blurb: 'Each sentence of step 2 becomes its own paragraph.' },
+  { n: 5,  key: 'synopsis',  title: 'Character synopsis',
+    blurb: 'The story from each character\u2019s point of view.' },
+  { n: 6,  key: 'expand4',   title: 'Pages from paragraphs',
+    blurb: 'Each paragraph of step 4 becomes a full page.' },
+  { n: 7,  key: 'charts',    title: 'Character charts',
+    blurb: 'Everything else you know about each character.' },
+  { n: 8,  key: 'scenes',    title: 'Scene map',
+    blurb: 'Every scene, with its point of view. Creates scenes.' },
+  { n: 9,  key: 'narrative', title: 'Narrative description',
+    blurb: 'A short summary of each scene \u2014 a mini first draft.' },
+  { n: 10, key: 'draft',     title: 'Write the first draft',
+    blurb: 'The part no method can do for you.' },
+];
+
+// Steps 1, 2 and 8 are the spine. The rest can be switched off, and
+// several writers use none of them.
+const SNOWFLAKE_CORE = ['sentence', 'paragraph', 'scenes', 'draft'];
+
+const SWAIN_FIELDS = ['Situation', 'Character', 'Objective', 'Opponent', 'Disaster'];
+
+// ── Sentence splitting ─────────────────────────────────────────────
+//
+// Step 2 is written as prose and STORED as its sentences, because
+// step 4 expands sentence n into paragraph n. A naive split on ". "
+// breaks on ranks and initials, which this material is full of —
+// "Col. Mendoza", "J. R. Langford", "St. Louis".
+
+const SPLIT_GUARDS = [
+  'Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'St', 'Sgt', 'Col', 'Gen', 'Lt', 'Capt',
+  'Cmdr', 'Maj', 'Cpl', 'Pvt', 'Adm', 'Gov', 'Sen', 'Rep', 'Jr', 'Sr',
+  'vs', 'etc', 'e.g', 'i.e', 'a.m', 'p.m', 'U.S', 'U.K',
+];
+
+function splitSentences(text) {
+  const src = (text || '').replace(/\s+/g, ' ').trim();
+  if (!src) return [];
+
+  const out = [];
+  let start = 0;
+
+  for (let i = 0; i < src.length; i++) {
+    if (!'.!?'.includes(src[i])) continue;
+
+    // Carry closing quotes and brackets into the sentence they end.
+    let j = i + 1;
+    while (j < src.length && '"\u201D\u2019\')]'.includes(src[j])) j++;
+    if (j < src.length && src[j] !== ' ') continue;
+
+    const before = src.slice(start, i);
+    const lastWord = before.split(/[\s(]/).pop();
+
+    // A known abbreviation, or a single initial like "J." — neither
+    // ends a sentence.
+    if (SPLIT_GUARDS.includes(lastWord)) continue;
+    if (/^[A-Z]$/.test(lastWord)) continue;
+
+    // What follows decides it. A lowercase word after a terminator
+    // means the sentence is still going — which is the case for an
+    // ellipsis ("She waited... then she ran") and for dialogue with a
+    // tag ('"Get down!" he shouted'). Both were splitting wrongly on
+    // the punctuation alone.
+    const next = src.slice(j).trimStart()[0];
+    if (next && !/[A-Z0-9"'\u201C\u2018(\[]/.test(next)) continue;
+
+    out.push(src.slice(start, j).trim());
+    start = j + 1;
+  }
+
+  const tail = src.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+// ── Snowflake state ────────────────────────────────────────────────
+
+// Which step is open, and whether the guided walkthrough is running.
+const snow = { step: 1, guided: false };
+
+async function snowConfig() {
+  const list = await RecordStore.listProjects();
+  const proj = list.find(p => p.id === RecordStore.currentProject());
+  return proj?.snowflake || { off: [], swain: {}, sentence: '', paragraph: '' };
+}
+
+async function saveSnowConfig(patch) {
+  const id = RecordStore.currentProject();
+  const rec = await RecordStore.get('project', id);
+  if (!rec) return;
+  const snowflake = { ...(rec.snowflake || {}), ...patch };
+  await RecordStore.put('project', id, { ...rec, snowflake });
+}
+
+async function activeSteps() {
+  const cfg = await snowConfig();
+  // A switched-off step is HIDDEN, not deleted. Whatever you wrote in
+  // it comes back when you turn it on — otherwise unchecking a box
+  // would be a data loss with no confirmation.
+  return SNOWFLAKE_STEPS.filter(s => !(cfg.off || []).includes(s.key));
+}
+
+// ── Rail ───────────────────────────────────────────────────────────
+
+async function renderPlan() {
+  const list = $('plan-list');
+  list.replaceChildren();
+
+  const cfg = await snowConfig();
+  const steps = await activeSteps();
+  const done = await stepProgress();
+
+  for (const step of steps) {
+    const row = el('button', 'toc-scene plan-row' + (snow.step === step.n ? ' on' : ''));
+    row.setAttribute('aria-current', String(snow.step === step.n));
+    row.append(el('span', 'plan-n', String(step.n)));
+    row.append(el('span', 'toc-title', step.title));
+    const state = done[step.key];
+    if (state) row.append(el('span', 'plan-done', state));
+    row.addEventListener('click', () => { snow.step = step.n; renderPlan(); renderSnowflake(); });
+    list.append(row);
+  }
+
+  const hidden = SNOWFLAKE_STEPS.length - steps.length;
+  const tog = el('button', 'toc-add', hidden ? `Steps \u00B7 ${hidden} hidden` : 'Choose steps');
+  tog.addEventListener('click', openStepPicker);
+  list.append(tog);
+}
+
+// A short state per step, so the rail says what's been done without
+// claiming anything is "complete" — nothing in this method ever is.
+async function stepProgress() {
+  const cfg = await snowConfig();
+  const [l2, l3, l4] = await Promise.all([
+    RecordStore.beatsAt(2), RecordStore.beatsAt(3), RecordStore.beatsAt(4),
+  ]);
+  const cards = Object.values(await RecordStore.getAllIn('card'))
+    .filter(c => c.cardType === 'character');
+  const tree = App.tree || await RecordStore.getTree();
+  const scenes = RecordStore.allChapters(tree).flatMap(c => c.scenes)
+    .concat(tree.unfiled || []);
+
+  const n = (v, unit) => v ? `${v}` : '';
+  return {
+    sentence:  cfg.sentence ? '\u2713' : '',
+    paragraph: n(l2.length),
+    sheets:    n(cards.length),
+    expand2:   n(l3.length),
+    synopsis:  n(cards.filter(c => c.body).length),
+    expand4:   n(l4.length),
+    charts:    n(cards.filter(c => Object.keys(c.fields || {}).length > 4).length),
+    scenes:    n(scenes.length),
+    narrative: n(scenes.filter(s => s.synopsis).length),
+    draft:     tree.totalWords ? fmtWords(tree.totalWords) : '',
+  };
+}
+
+async function openStepPicker() {
+  const cfg = await snowConfig();
+  const off = new Set(cfg.off || []);
+
+  const overlay = el('div', 'modal-overlay');
+  const modal = el('div', 'modal modal-sm');
+  const head = el('div', 'modal-header');
+  head.append(el('h2', 'modal-title', 'Which steps?'));
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'note',
+    'Turn off the ones you don\u2019t use. Nothing is deleted \u2014 a hidden ' +
+    'step keeps whatever is in it and comes back if you turn it on again.'));
+
+  for (const s of SNOWFLAKE_STEPS) {
+    const row = el('label', 'row');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = !off.has(s.key);
+    cb.disabled = SNOWFLAKE_CORE.includes(s.key);
+    cb.addEventListener('change', () => {
+      cb.checked ? off.delete(s.key) : off.add(s.key);
+    });
+    row.append(el('span', null, `${s.n}. ${s.title}`));
+    row.append(cb);
+    body.append(row);
+  }
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'ghost-btn', 'Cancel');
+  cancel.addEventListener('click', () => overlay.remove());
+  const save = el('button', 'solid-btn', 'Save');
+  save.addEventListener('click', async () => {
+    await saveSnowConfig({ off: [...off] });
+    overlay.remove();
+    renderPlan();
+    renderSnowflake();
+  });
+  actions.append(cancel, save);
+  body.append(actions);
+
+  modal.append(head, body);
+  overlay.append(modal);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
+// ── The sheet ──────────────────────────────────────────────────────
+
+async function openPlan() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.view = 'plan';
+  for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
+                    'grid-wrap', 'board-wrap', 'map-wrap', 'empty']) $(id).hidden = true;
+  $('plan-wrap').hidden = false;
+  $('tally').textContent = '';
+  await renderSnowflake();
+}
+
+async function renderSnowflake() {
+  const host = $('plan');
+  host.replaceChildren();
+
+  const steps = await activeSteps();
+  const step = steps.find(s => s.n === snow.step) || steps[0];
+  if (!step) return;
+  snow.step = step.n;
+
+  const head = el('header', 'sf-head');
+  head.append(el('span', 'sf-n', `Step ${step.n}`));
+  head.append(el('h1', null, step.title));
+  head.append(el('p', 'sf-blurb', step.blurb));
+  host.append(head);
+
+  const body = el('div', 'sf-body');
+  host.append(body);
+  await STEP_VIEW[step.key](body);
+
+  // Guided mode is the same records with next/back over them, not a
+  // separate flow — so you can leave it at any point and the work is
+  // simply there.
+  const nav = el('nav', 'sf-nav');
+  const i = steps.indexOf(step);
+  if (i > 0) {
+    const b = el('button', 'ghost-btn', `\u2190 ${steps[i - 1].title}`);
+    b.addEventListener('click', () => { snow.step = steps[i - 1].n; renderPlan(); renderSnowflake(); });
+    nav.append(b);
+  } else nav.append(el('span', 'sn-gap'));
+  if (i < steps.length - 1) {
+    const b = el('button', 'solid-btn', `${steps[i + 1].title} \u2192`);
+    b.addEventListener('click', () => { snow.step = steps[i + 1].n; renderPlan(); renderSnowflake(); });
+    nav.append(b);
+  }
+  host.append(nav);
+}
+
+function sfField(parent, label, value, onChange, { rows = 2, placeholder = '' } = {}) {
+  const wrap = el('label', 'sf-field');
+  wrap.append(el('span', null, label));
+  const ta = el('textarea');
+  ta.rows = rows;
+  ta.value = value || '';
+  ta.placeholder = placeholder;
+  ta.addEventListener('input', () => autoGrow(ta));
+  ta.addEventListener('change', () => onChange(ta.value.trim()));
+  wrap.append(ta);
+  parent.append(wrap);
+  requestAnimationFrame(() => autoGrow(ta));
+  return ta;
+}
+
+const STEP_VIEW = {
+
+  // ── 1 · Sentence ──
+  async sentence(box) {
+    const cfg = await snowConfig();
+    sfField(box, 'The story, in a sentence or two', cfg.sentence,
+      v => saveSnowConfig({ sentence: v }),
+      { rows: 3, placeholder: 'A disgraced operator returns to the desert that broke her.' });
+
+    box.append(el('p', 'note',
+      'Swain\u2019s five parts, if they help you find it. They are a way in, not a form to complete.'));
+    const grid = el('div', 'sf-swain');
+    for (const f of SWAIN_FIELDS) {
+      sfField(grid, f, cfg.swain?.[f], async v => {
+        const c = await snowConfig();
+        saveSnowConfig({ swain: { ...(c.swain || {}), [f]: v } });
+      }, { rows: 1 });
+    }
+    box.append(grid);
+  },
+
+  // ── 2 · Paragraph, written as prose and stored as sentences ──
+  async paragraph(box) {
+    const cfg = await snowConfig();
+    const beats = await RecordStore.beatsAt(2, null);
+
+    box.append(el('p', 'note',
+      'Write it as a paragraph. It splits into sentences underneath as you go \u2014 ' +
+      'step 4 expands each one, so the split is the structure, not decoration.'));
+
+    const prose = el('textarea', 'sf-prose');
+    prose.rows = 5;
+    prose.placeholder =
+      'The setup, three disasters with the third the worst, and the ending.';
+    // Once sentences have been edited by hand the prose box becomes a
+    // read-only view of them joined: re-splitting would silently undo
+    // a correction you made deliberately.
+    prose.value = cfg.paragraph || beats.map(b => b.text).join(' ');
+    prose.readOnly = !!cfg.paragraphLocked;
+    box.append(prose);
+
+    const parts = el('div', 'sf-parts');
+    box.append(parts);
+
+    const paint = list => {
+      parts.replaceChildren();
+      list.forEach((b, i) => {
+        const row = el('div', 'sf-part');
+        row.append(el('span', 'sf-role',
+          RecordStore.BEAT_ROLES[i] || `Sentence ${i + 1}`));
+        const ta = el('textarea');
+        ta.rows = 1;
+        ta.value = b.text || '';
+        ta.addEventListener('input', () => autoGrow(ta));
+        ta.addEventListener('change', async () => {
+          const rec = await RecordStore.get('beat', b.id);
+          if (rec) await RecordStore.put('beat', b.id, { ...rec, text: ta.value.trim() });
+          // Hand authority to the sentences from here on.
+          await saveSnowConfig({ paragraphLocked: true, paragraph: '' });
+          prose.readOnly = true;
+          renderPlan();
+        });
+        row.append(ta);
+        parts.append(row);
+        requestAnimationFrame(() => autoGrow(ta));
+      });
+
+      if (cfg.paragraphLocked) {
+        const back = el('button', 'toc-add', 'Edit as prose again');
+        back.addEventListener('click', async () => {
+          if (!confirm('Rewriting as prose re-splits the sentences. Corrections you made to individual sentences may move.')) return;
+          await saveSnowConfig({ paragraphLocked: false });
+          renderSnowflake();
+        });
+        parts.append(back);
+      }
+    };
+
+    paint(beats);
+
+    let timer = null;
+    prose.addEventListener('input', () => {
+      autoGrow(prose);
+      if (prose.readOnly) return;
+      // Debounced, and only on completed sentences — splitting on every
+      // keystroke makes a half-typed sentence jump between boxes.
+      clearTimeout(timer);
+      timer = setTimeout(() => resplit(prose.value), 400);
+    });
+    requestAnimationFrame(() => autoGrow(prose));
+
+    async function resplit(text) {
+      const sentences = splitSentences(text);
+      const existing = await RecordStore.beatsAt(2, null);
+
+      for (let i = 0; i < Math.max(sentences.length, existing.length); i++) {
+        const s = sentences[i];
+        const b = existing[i];
+        if (s && b) {
+          if (b.text !== s) await RecordStore.put('beat', b.id, { ...b, text: s });
+        } else if (s) {
+          await RecordStore.createBeat({ level: 2, text: s, order: i });
+        } else if (b) {
+          // Only remove an empty tail beat if nothing hangs off it.
+          const kids = await RecordStore.beatsAt(3, b.id);
+          if (!kids.length && !(b.text || '').trim()) await RecordStore.deleteBeat(b.id);
+          else if (!kids.length) await RecordStore.deleteBeat(b.id);
+        }
+      }
+      await saveSnowConfig({ paragraph: text });
+      paint(await RecordStore.beatsAt(2, null));
+      renderPlan();
+    }
+  },
+
+  // ── 3, 5, 7 · The same cards, deepening ──
+  async sheets(box)   { await characterStep(box, 'sheet'); },
+  async synopsis(box) { await characterStep(box, 'synopsis'); },
+  async charts(box)   { await characterStep(box, 'chart'); },
+
+  // ── 4 and 6 · The expansion ──
+  async expand2(box) { await expandStep(box, 2); },
+  async expand4(box) { await expandStep(box, 3); },
+
+  // ── 8 · Scene map ──
+  async scenes(box) {
+    const tree = App.tree || await RecordStore.getTree();
+    const chapters = RecordStore.allChapters(tree);
+    const beats = await RecordStore.beatTree();
+    const flat = [];
+    const walk = (list, depth) => list.forEach(b => {
+      flat.push({ ...b, depth });
+      walk(b.children, depth + 1);
+    });
+    walk(beats, 0);
+
+    if (!flat.length) {
+      box.append(el('p', 'rv-empty',
+        'Write step 2 first \u2014 scenes here hang off the beats it creates.'));
+      return;
+    }
+
+    box.append(el('p', 'note',
+      'Every scene, with its point of view and what happens. A scene made here ' +
+      'is a real scene in the manuscript \u2014 give it a chapter or it waits in Unplaced.'));
+
+    for (const b of flat) {
+      const sec = el('section', 'sf-beat');
+      const h = el('div', 'sf-beat-head');
+      h.append(el('span', 'sf-level', RecordStore.BEAT_LEVELS[b.level]));
+      h.append(el('span', 'sf-beat-text', b.text || 'Untitled beat'));
+      if (b.sceneCount) h.append(el('span', 'toc-figure',
+        `${b.sceneCount} scene${b.sceneCount === 1 ? '' : 's'} \u00B7 ${fmtWords(b.words)}`));
+      sec.append(h);
+
+      for (const sc of b.scenes) {
+        const row = el('button', 'sf-scene');
+        row.append(el('span', 'toc-title', sc.title || 'Untitled scene'));
+        if (sc.pov) row.append(el('span', 'sf-pov', sc.pov));
+        row.append(el('span', 'toc-figure', fmtWords(sc.wordCount)));
+        row.addEventListener('click', () => { railSection('manuscript'); openScene(sc.id); });
+        sec.append(row);
+      }
+
+      const add = el('button', 'toc-add', '+ scene for this beat');
+      add.addEventListener('click', () => newSceneForBeat(b, chapters));
+      sec.append(add);
+      box.append(sec);
+    }
+
+    const stray = await RecordStore.unplannedScenes();
+    if (stray.length) {
+      const sec = el('section', 'sf-beat');
+      sec.append(el('div', 'sf-beat-head',
+        `${stray.length} scene${stray.length === 1 ? '' : 's'} not tied to a beat`));
+      sec.append(el('p', 'note',
+        'Sometimes exactly right \u2014 the book found something the plan didn\u2019t. ' +
+        'Worth a look either way.'));
+      for (const sc of stray) {
+        const row = el('button', 'sf-scene');
+        row.append(el('span', 'toc-title', sc.title || 'Untitled scene'));
+        row.append(el('span', 'sf-pov', sc.chapter || ''));
+        row.addEventListener('click', () => { railSection('manuscript'); openScene(sc.id); });
+        sec.append(row);
+      }
+      box.append(sec);
+    }
+  },
+
+  // ── 9 · Narrative description ──
+  async narrative(box) {
+    const tree = App.tree || await RecordStore.getTree();
+    const scenes = RecordStore.allChapters(tree).flatMap(ch =>
+      ch.scenes.map(s => ({ ...s, chapter: ch.title })));
+    if (!scenes.length) {
+      box.append(el('p', 'rv-empty', 'No scenes yet \u2014 step 8 makes them.'));
+      return;
+    }
+    box.append(el('p', 'note',
+      'A short summary of each scene. Together they are a mini first draft to write against. ' +
+      'This is the same synopsis field the scene editor shows.'));
+
+    for (const sc of scenes) {
+      const rec = await RecordStore.get('scene', sc.id);
+      if (!rec) continue;
+      sfField(box, `${sc.chapter} \u2014 ${sc.title}`, rec.synopsis, async v => {
+        const fresh = await RecordStore.get('scene', sc.id);
+        if (fresh) await RecordStore.put('scene', sc.id, { ...fresh, synopsis: v });
+        renderPlan();
+      }, { rows: 2, placeholder: 'What happens, and what it costs.' });
+    }
+  },
+
+  // ── 10 · Draft ──
+  async draft(box) {
+    const tree = App.tree || await RecordStore.getTree();
+    box.append(el('p', 'note',
+      `${tree.totalWords.toLocaleString()} words so far. The plan is behind you now \u2014 ` +
+      'it is there when you want it and does not need finishing.'));
+    const go = el('button', 'solid-btn', 'Back to the manuscript');
+    go.addEventListener('click', () => {
+      railSection('manuscript');
+      place().openSceneId ? openScene(place().openSceneId) : showEmpty();
+    });
+    box.append(go);
+  },
+};
+
+// ── Shared step machinery ──────────────────────────────────────────
+
+// Steps 3, 5 and 7 are the SAME CARDS at increasing depth, not three
+// separate artefacts. The template repeats them because it's a Word
+// document; a tool shouldn't. Step 3 adds the Snowflake fields, step 5
+// fills the notes, step 7 adds whatever else you know.
+const SNOWFLAKE_CARD_FIELDS = {
+  sheet: ['Role', 'Storyline in a sentence', 'Motivation',
+          'Goal — professional', 'Goal — personal', 'Goal — love',
+          'Conflict — external', 'Conflict — internal', 'Epiphany'],
+  chart: ['Born', 'Appearance', 'History', 'How they speak',
+          'What they want that they cannot admit'],
+};
+
+async function characterStep(box, phase) {
+  const cards = Object.values(await RecordStore.getAllIn('card'))
+    .filter(c => c.cardType === 'character')
+    .sort((x, y) => (x.name || '').localeCompare(y.name || ''));
+
+  const blurb = {
+    sheet: 'A sheet for each character who matters. These are ordinary cards — ' +
+           'anything you add here shows up everywhere else in the app.',
+    synopsis: 'The whole story, told from each character\u2019s point of view. ' +
+              'Written into the card\u2019s notes.',
+    chart: 'Everything else you know. Birthdate, history, how they talk.',
+  }[phase];
+  box.append(el('p', 'note', blurb));
+
+  if (!cards.length) {
+    box.append(el('p', 'rv-empty', 'No character cards yet.'));
+  }
+
+  for (const c of cards) {
+    const sec = el('section', 'sf-beat');
+    const h = el('div', 'sf-beat-head');
+    const open = el('button', 'sf-card-name', c.name);
+    open.addEventListener('click', () => { railSection('cards'); openCard(c.id); });
+    h.append(open);
+    sec.append(h);
+
+    if (phase === 'synopsis') {
+      sfField(sec, 'Their version of the story', c.body, async v => {
+        const rec = await RecordStore.get('card', c.id);
+        if (rec) await RecordStore.put('card', c.id, { ...rec, body: v });
+        renderPlan();
+      }, { rows: 5 });
+    } else {
+      for (const f of SNOWFLAKE_CARD_FIELDS[phase]) {
+        sfField(sec, f, (c.fields || {})[f], async v => {
+          const rec = await RecordStore.get('card', c.id);
+          if (!rec) return;
+          await RecordStore.put('card', c.id, { ...rec, fields: { ...rec.fields, [f]: v } });
+          renderPlan();
+        }, { rows: 1 });
+      }
+    }
+    box.append(sec);
+  }
+
+  const add = el('button', 'toc-add', '+ character');
+  add.addEventListener('click', async () => {
+    const name = await askName('New character', 'Name');
+    if (!name) return;
+    const id = await RecordStore.createCard('character', name);
+    if (!id) return;
+    const rec = await RecordStore.get('card', id);
+    const fields = {};
+    for (const f of SNOWFLAKE_CARD_FIELDS.sheet) fields[f] = '';
+    await RecordStore.put('card', id, { ...rec, fields });
+    invalidateCardIndex();
+    renderSnowflake();
+    renderPlan();
+  });
+  box.append(add);
+}
+
+/**
+ * expandStep(box, fromLevel) — steps 4 and 6.
+ *
+ * Each element of the level above gets one child here, and that
+ * parentage is the method: paragraph n expands sentence n. Showing the
+ * parent above each box is not decoration — it's the thing you are
+ * expanding, and without it you're just writing more prose.
+ */
+async function expandStep(box, fromLevel) {
+  const parents = await RecordStore.beatsAt(fromLevel);
+  if (!parents.length) {
+    box.append(el('p', 'rv-empty',
+      fromLevel === 2 ? 'Write step 2 first.' : 'Write step 4 first.'));
+    return;
+  }
+
+  box.append(el('p', 'note', fromLevel === 2
+    ? 'One paragraph for each sentence above. The third disaster usually wants the most.'
+    : 'One page for each paragraph. This is the last stop before scenes.'));
+
+  for (const parent of parents) {
+    const sec = el('section', 'sf-beat');
+    const h = el('div', 'sf-beat-head');
+    h.append(el('span', 'sf-level', RecordStore.BEAT_LEVELS[parent.level]));
+    h.append(el('span', 'sf-beat-text', parent.text || '—'));
+    sec.append(h);
+
+    const kids = await RecordStore.beatsAt(fromLevel + 1, parent.id);
+    const child = kids[0];
+
+    sfField(sec, '', child?.text, async v => {
+      if (child) {
+        const rec = await RecordStore.get('beat', child.id);
+        if (rec) await RecordStore.put('beat', child.id, { ...rec, text: v });
+      } else if (v) {
+        await RecordStore.createBeat({ parentId: parent.id, level: fromLevel + 1, text: v });
+      }
+      renderPlan();
+    }, { rows: fromLevel === 2 ? 4 : 10,
+         placeholder: fromLevel === 2 ? 'Expand this sentence into a paragraph.'
+                                      : 'Expand this paragraph into a page.' });
+    box.append(sec);
+  }
+}
+
+/**
+ * newSceneForBeat(beat, chapters) — make a scene that dramatizes a beat.
+ *
+ * Asks for the chapter up front. Creating forty scenes straight into
+ * Unplaced would leave a pile to sort; choosing as you go means most
+ * of them never go there. Leave it blank and Unplaced is exactly the
+ * right home, which is what it is already for.
+ */
+async function newSceneForBeat(beat, chapters) {
+  const title = await askName('New scene', 'What happens');
+  if (!title) return;
+
+  let chapterId = null;
+  if (chapters.length) {
+    chapterId = await askChoice('Put it in which chapter?', [
+      ...chapters.map(c => ({ label: c.title, value: c.id })),
+      { label: 'Leave it unplaced for now', value: '' },
+    ]);
+    if (chapterId === null) return;   // cancelled, as distinct from unplaced
+  }
+
+  const id = await RecordStore.createScene(chapterId || null, title);
+  if (!id) return;
+  const rec = await RecordStore.get('scene', id);
+  await RecordStore.put('scene', id, { ...rec, beatId: beat.id });
+  await renderTree();
+  renderSnowflake();
+  renderPlan();
+}
+
 // ══ Cards ══════════════════════════════════════════════════════════
 //
 // The reference layer: people, places, factions, objects, research.
@@ -2274,9 +2949,11 @@ function railSection(name) {
   $('toc-tools').hidden   = name !== 'manuscript';
   $('event-list').hidden  = name !== 'events';
   $('ev-filter').hidden   = name !== 'events';
+  $('plan-list').hidden   = name !== 'plan';
   saveLocal();
   if (name === 'cards')  return renderCards();
   if (name === 'events') return renderEvents();
+  if (name === 'plan')   return renderPlan();
   return renderTree();
 }
 
@@ -2369,6 +3046,7 @@ async function openCard(id) {
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
   $('map-wrap').hidden = true;
+  $('plan-wrap').hidden = true;
   $('card-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -2824,7 +3502,7 @@ async function openEvent(id) {
   App.view = 'edit';
 
   for (const h of ['readview', 'empty', 'scene', 'card-edit', 'timeline-wrap',
-                   'grid-wrap', 'board-wrap', 'map-wrap']) $(h).hidden = true;
+                   'grid-wrap', 'board-wrap', 'map-wrap', 'plan-wrap']) $(h).hidden = true;
   $('event-edit').hidden = false;
   $('btn-read').setAttribute('aria-pressed', 'false');
 
@@ -3780,6 +4458,7 @@ async function openTimeline() {
   $('grid-wrap').hidden = true;
   $('board-wrap').hidden = true;
   $('map-wrap').hidden = true;
+  $('plan-wrap').hidden = true;
   hideTlTip();
   $('tally').textContent = '';
   await renderTimeline();
@@ -3892,7 +4571,7 @@ async function openBoard() {
 
   App.view = 'board';
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
-                    'grid-wrap', 'map-wrap', 'empty']) $(id).hidden = true;
+                    'grid-wrap', 'map-wrap', 'plan-wrap', 'empty']) $(id).hidden = true;
   $('board-wrap').hidden = false;
   $('tally').textContent = '';
   await renderBoard();
@@ -4208,7 +4887,7 @@ async function openMap() {
 
   App.view = 'map';
   for (const id of ['scene', 'card-edit', 'event-edit', 'readview', 'timeline-wrap',
-                    'grid-wrap', 'board-wrap', 'empty']) $(id).hidden = true;
+                    'grid-wrap', 'board-wrap', 'plan-wrap', 'empty']) $(id).hidden = true;
   $('map-wrap').hidden = false;
   $('tally').textContent = '';
   await renderMap();
@@ -4344,6 +5023,7 @@ async function openGrid() {
   $('grid-wrap').hidden = false;
   $('board-wrap').hidden = true;
   $('map-wrap').hidden = true;
+  $('plan-wrap').hidden = true;
   $('tally').textContent = '';
   await renderGrid();
 }
@@ -4878,8 +5558,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     await renderParticipants([...readParticipants(), id]);
     flushActiveEvent();
   });
-  for (const b of document.querySelectorAll('.rail-switch [role="tab"]'))
-    b.addEventListener('click', () => railSection(b.dataset.section));
+  for (const b of document.querySelectorAll('.rail-switch [role="tab"]')) {
+    b.addEventListener('click', async () => {
+      await railSection(b.dataset.section);
+      if (b.dataset.section === 'plan') openPlan();
+    });
+  }
 
   for (const id of ['card-name', 'card-tags', 'card-aka', 'card-body'])
     $(id).addEventListener('input', scheduleCardSave);
