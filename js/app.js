@@ -2092,59 +2092,122 @@ async function exportManuscript() {
  * Numeric prefixes preserve reading order in a file listing, which
  * alphabetical names would scramble.
  */
-async function exportBackup() {
-  await flushActiveScene();
-
-  const files = {};
-  const enc = fflate.strToU8;
-
-  const [books, parts, chapters, scenes, cards, events] = await Promise.all([
-    RecordStore.getAll('book'), RecordStore.getAll('part'),
+/**
+ * collectRecords(projectId) — every record, or one project's worth.
+ *
+ * Scenes, chapters and parts have no projectId of their own: they
+ * belong to a book, and the book belongs to a project. So a scoped
+ * collection walks DOWN from the books rather than filtering each type
+ * independently — filtering scenes by a field they don't have would
+ * silently return nothing at all.
+ */
+async function collectRecords(projectId = null) {
+  const [projects, books, parts, chapters, scenes, cards, events] = await Promise.all([
+    RecordStore.getAll('project'), RecordStore.getAll('book'), RecordStore.getAll('part'),
     RecordStore.getAll('chapter'), RecordStore.getAll('scene'),
     RecordStore.getAll('card'), RecordStore.getAll('event'),
   ]);
+
+  if (!projectId) return { projects, books, parts, chapters, scenes, cards, events };
+
+  const keep = (obj, test) =>
+    Object.fromEntries(Object.entries(obj).filter(([, r]) => test(r)));
+
+  const myBooks = keep(books, b => b.projectId === projectId);
+  const bookIds = new Set(Object.keys(myBooks));
+  const myParts = keep(parts, pt => bookIds.has(pt.bookId));
+  const myChapters = keep(chapters, c => bookIds.has(c.bookId) || myParts[c.partId]);
+  const chapterIds = new Set(Object.keys(myChapters));
+
+  return {
+    projects: keep(projects, pr => pr.id === projectId),
+    books: myBooks,
+    parts: myParts,
+    chapters: myChapters,
+    scenes: keep(scenes, s => chapterIds.has(s.chapterId)),
+    cards: keep(cards, c => c.projectId === projectId),
+    events: keep(events, e => e.projectId === projectId),
+  };
+}
+
+/**
+ * exportBackup({ projectId }) — the restorable zip.
+ *
+ * projectId null backs up EVERYTHING, across every project. A backup
+ * should be everything you own; anything narrower is an export.
+ *
+ * Layout mirrors the structure, so the folder is browsable on its own:
+ *
+ *   manuscript/<project>/<book>/<part>/<chapter>/01-scene.md
+ *   compiled.md                (single-project exports only)
+ *   images/<cardId>.jpg
+ *   recension-backup.json      ← the restorable copy
+ *
+ * Numeric prefixes preserve reading order in a file listing, which
+ * alphabetical names would scramble.
+ */
+async function exportBackup({ projectId = null } = {}) {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  const records = await collectRecords(projectId);
+  const { projects, books, parts, chapters, scenes, cards } = records;
+  const files = {};
+  const enc = fflate.strToU8;
+  const single = !!projectId;
 
   const addScene = (path, i, rec) => {
     const head = [`# ${rec.title || 'Untitled scene'}`];
     if (rec.synopsis) head.push('', `> ${rec.synopsis}`);
     if (rec.pov)      head.push('', `POV: ${rec.pov}`);
     // Links are KEPT here. This copy exists to restore from, and
-    // stripping them would make the backup lossy — compiled.md in the
-    // same zip is the reader-facing version.
+    // stripping them would make the backup lossy — compiled.md is the
+    // reader-facing version.
     head.push('', (rec.body || '').trim(), '');
     files[`${path}/${pad(i + 1)}-${slug(rec.title, 'scene')}.md`] = enc(head.join('\n'));
   };
 
-  const tree = App.tree;
-  tree.works.forEach((w, wi) => {
-    const wp = `manuscript/${pad(wi + 1)}-${slug(w.title, 'book')}`;
-    let ci = 0;
-    w.parts.forEach((pt, pi) => {
-      const pp = `${wp}/${pad(pi + 1)}-${slug(pt.title, 'part')}`;
-      pt.chapters.forEach((c, i) => {
-        const cp = `${pp}/${pad(i + 1)}-${slug(c.title, 'chapter')}`;
-        c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
+  const ordered = o => Object.values(o).sort((x, y) => (x.order || 0) - (y.order || 0));
+  const scenesOf = chapterId => Object.values(scenes)
+    .filter(s => s.chapterId === chapterId)
+    .sort((x, y) => (x.order || 0) - (y.order || 0));
+  const writeChapter = (path, ch, i) => {
+    const cp = `${path}/${pad(i + 1)}-${slug(ch.title, 'chapter')}`;
+    scenesOf(ch.id).forEach((s, si) => addScene(cp, si, s));
+  };
+
+  ordered(projects).forEach((proj, pi) => {
+    // A single-project export needs no project folder — there is only
+    // one, and the extra level would be noise.
+    const root = single ? 'manuscript'
+      : `manuscript/${pad(pi + 1)}-${slug(proj.title, 'project')}`;
+
+    ordered(books).filter(b => b.projectId === proj.id).forEach((b, bi) => {
+      const bp = `${root}/${pad(bi + 1)}-${slug(b.title, 'book')}`;
+      ordered(parts).filter(pt => pt.bookId === b.id).forEach((pt, pti) => {
+        const pp = `${bp}/${pad(pti + 1)}-${slug(pt.title, 'part')}`;
+        ordered(chapters).filter(c => c.partId === pt.id)
+          .forEach((c, ci) => writeChapter(pp, c, ci));
       });
+      let n = 0;
+      ordered(chapters).filter(c => c.bookId === b.id && !c.partId)
+        .forEach(c => writeChapter(bp, c, n++));
     });
-    w.looseChapters.forEach(c => {
-      const cp = `${wp}/${pad(++ci)}-${slug(c.title, 'chapter')}`;
-      c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
-    });
-  });
-  (tree.orphanChapters || []).forEach((c, i) => {
-    const cp = `manuscript/detached/${pad(i + 1)}-${slug(c.title, 'chapter')}`;
-    c.scenes.forEach((s, si) => { if (scenes[s.id]) addScene(cp, si, scenes[s.id]); });
-  });
-  tree.unfiled.forEach((s, si) => {
-    if (scenes[s.id]) addScene('manuscript/unplaced', si, scenes[s.id]);
   });
 
-  files['compiled.md'] = enc(await compileText());
+  // Anything whose chapter or book is gone is still written out. A
+  // backup that silently omits detached work is not a backup.
+  const placed = new Set();
+  for (const ch of Object.values(chapters)) scenesOf(ch.id).forEach(s => placed.add(s.id));
+  Object.values(scenes).filter(s => !placed.has(s.id))
+    .forEach((s, i) => addScene('manuscript/unplaced', i, s));
 
-  // Images, as real files. The JSON carries only the imageKey string,
+  if (single) files['compiled.md'] = enc(await compileText(defaultReadScope()));
+
+  // Images as real files. The JSON carries only the imageKey string,
   // so without these a restored card would point at a portrait that
-  // exists nowhere — and a backup billed as "everything" would quietly
-  // not be.
+  // exists nowhere.
   for (const c of Object.values(cards)) {
     if (!c.imageKey) continue;
     const blob = await RecordStore.getImage(c.id);
@@ -2153,19 +2216,19 @@ async function exportBackup() {
     files[`images/${c.id}.${ext}`] = new Uint8Array(await blob.arrayBuffer());
   }
 
-  // The restorable copy: full records with ids, timestamps and ordering —
-  // everything the .md files drop on the way out.
   files['recension-backup.json'] = enc(JSON.stringify({
     format: 'recension-backup',
-    version: 1,
+    version: 2,
+    scope: single ? 'project' : 'all',
     exportedAt: new Date().toISOString(),
     author: App.data.author,
-    records: { books, parts, chapters, scenes, cards, events },
+    records,
   }, null, 2));
 
-  const zipped = fflate.zipSync(files, { level: 6 });
-  downloadBlob(zipped, `recension-backup-${stamp()}.zip`, 'application/zip');
-  showToast('Backup downloaded.');
+  const label = single ? slug(ordered(projects)[0]?.title, 'project') : 'everything';
+  downloadBlob(fflate.zipSync(files, { level: 6 }),
+    `recension-${label}-${stamp()}.zip`, 'application/zip');
+  showToast(single ? 'Project exported.' : 'Backup downloaded.');
 }
 
 // ══ Cards ══════════════════════════════════════════════════════════
@@ -3294,8 +3357,9 @@ function describeBackup(data) {
   const r = data?.records || {};
   const count = t => Object.keys(r[t] || {}).length;
   const when = data?.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'unknown date';
+  const projects = Object.keys(r.projects || {}).length;
   const bits = [
-    [count('book'), 'book'], [count('part'), 'part'],
+    [projects, 'project'], [count('book'), 'book'], [count('part'), 'part'],
     [count('chapter'), 'chapter'], [count('scene'), 'scene'],
     [count('card'), 'card'], [count('event'), 'event'],
   ].filter(([n]) => n)
@@ -3354,7 +3418,19 @@ async function runImport(file) {
   await flushActiveEvent();
 
   showToast('Importing…');
-  const stats = await RecordStore.importRecords(data.records, { mode });
+
+  // A backup taken before projects existed has no projectId anywhere.
+  // Those records would import successfully and then be invisible in
+  // every view, because the migration only runs when NO project exists
+  // — and by now one does. Adopt them into the project you're in.
+  const adopted = { ...data.records };
+  for (const type of ['book', 'card', 'event']) {
+    if (!adopted[type]) continue;
+    adopted[type] = Object.fromEntries(Object.entries(adopted[type]).map(([id, rec]) =>
+      [id, rec.projectId ? rec : { ...rec, projectId: RecordStore.currentProject() }]));
+  }
+
+  const stats = await RecordStore.importRecords(adopted, { mode });
 
   // Author details ride along in the backup, but never clobber details
   // already filled in on this device.
@@ -4927,6 +5003,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (file) await runImport(file);
   });
 
+  $('btn-export-project').addEventListener('click', () =>
+    exportBackup({ projectId: RecordStore.currentProject() })
+      .catch(e => { console.error(e); showToast('Export failed — see the console.'); }));
   $('btn-export-backup').addEventListener('click', () => exportBackup()
     .catch(e => { console.error(e); showToast('Backup failed - see the console.'); }));
 
