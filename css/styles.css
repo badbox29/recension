@@ -148,18 +148,51 @@ svg:not(.tl-svg) {
   z-index: 30;
 }
 
+/* The project picker. It occupies the wordmark's old place because
+   once there's more than one project, which one you're in matters more
+   than the app's own name. */
 .wordmark {
   font-family: var(--prose);
   font-size: var(--t-md);
   font-weight: 600;
   letter-spacing: 0.005em;
-  padding-right: 0.5rem;
-  margin-right: 0.25rem;
+  color: var(--ink);
+  background: none;
+  border: 0;
   border-right: 1px solid var(--rule);
+  padding: 0 0.5rem 0 0.375rem;
+  margin-right: 0.25rem;
   align-self: stretch;
   display: flex;
   align-items: center;
+  gap: 0.1875rem;
   white-space: nowrap;
+  cursor: pointer;
+  max-width: 14rem;
+}
+.wordmark:hover { color: var(--rubric); }
+#project-name { overflow: hidden; text-overflow: ellipsis; }
+.wordmark-caret { width: 0.875rem; height: 0.875rem; color: var(--ink-faint); flex: none; }
+
+/* Project list inside the row-menu shell. */
+.project-menu { min-width: 12rem; max-width: 18rem; }
+.project-menu button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-menu button.on {
+  color: var(--rubric);
+  font-family: var(--prose);
+}
+.menu-rule {
+  height: 1px;
+  background: var(--rule-soft);
+  margin: 0.1875rem 0.25rem;
+}
+
+@media (max-width: 44rem) {
+  .wordmark { max-width: 8rem; font-size: var(--t-sm); }
 }
 
 /* The tab strip used to sit between the wordmark and these, and take
