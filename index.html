@@ -375,6 +375,8 @@
                 aria-controls="panel-account" aria-selected="false">Account</button>
         <button role="tab" id="tab-author" data-panel="author"
                 aria-controls="panel-author" aria-selected="false">Author info</button>
+        <button role="tab" id="tab-files" data-panel="files"
+                aria-controls="panel-files" aria-selected="false">Import / export</button>
       </div>
 
       <!-- All three panels occupy the same grid cell, so the modal is
@@ -447,16 +449,7 @@
         </div>
       </section>
 
-<section class="set-block">
-        <h3>Export</h3>
-        <p class="note">Compile gives you the manuscript as one document —
-          Word in standard manuscript format, EPUB to read on a phone,
-          or plain text. The backup is everything, and it can be restored.</p>
-        <div class="btn-row">
-          <button class="solid-btn" id="btn-export-manuscript">Compile</button>
-          <button class="ghost-btn" id="btn-export-backup">Download backup</button>
-        </div>
-      </section>
+
 
       <section class="set-block">
         <h3>Storage</h3>
@@ -466,16 +459,66 @@
         </div>
       </section>
 
-      <section class="set-block">
-        <h3>Import</h3>
-        <p class="note">Restore from a backup zip, or the
-          recension-backup.json inside one. Adding is the default and
-          never changes anything already here.</p>
-        <div class="btn-row">
-          <button class="ghost-btn" id="btn-import">Restore a backup</button>
-        </div>
-        <input type="file" id="import-file" accept=".zip,.json" hidden />
-      </section>
+      
+      </div>
+
+      <div class="set-panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files">
+
+        <section class="set-block">
+          <h3>Take something out</h3>
+          <p class="note">Three different jobs, so three different files.</p>
+
+          <dl class="opt-list">
+            <dt>Compile a manuscript</dt>
+            <dd>One book as a single document — Word in standard
+              manuscript format, EPUB to read on a phone, or plain text.
+              For reading and sending. <strong>Not</strong> something
+              you can import back.</dd>
+
+            <dt>Export this project</dt>
+            <dd>One project and everything in it: its books, scenes,
+              cards, events and images, plus a readable folder of
+              markdown. Can be imported again, here or on another
+              account.</dd>
+
+            <dt>Back up everything</dt>
+            <dd>Every project you have, in one file. This is the one to
+              keep somewhere safe.</dd>
+          </dl>
+
+          <div class="btn-row">
+            <button class="solid-btn" id="btn-export-manuscript">Compile a manuscript</button>
+            <button class="ghost-btn" id="btn-export-project">Export this project</button>
+            <button class="ghost-btn" id="btn-export-backup">Back up everything</button>
+          </div>
+        </section>
+
+        <section class="set-block">
+          <h3>Bring something in</h3>
+          <p class="note">Takes a backup or a project export — the .zip
+            itself, or the recension-backup.json from inside one. The
+            markdown files can't be imported: they carry no ids or
+            ordering, which is what a restore needs.</p>
+
+          <dl class="opt-list">
+            <dt>Add what is missing</dt>
+            <dd>Inserts anything this device doesn't already have and
+              changes nothing that's here, whatever the dates say. The
+              default.</dd>
+
+            <dt>Replace everything</dt>
+            <dd>Deletes every project on this device first, then writes
+              the file. Asks twice.</dd>
+          </dl>
+
+          <p class="note">You'll see what the file contains, and choose
+            between those two, before anything is written.</p>
+
+          <div class="btn-row">
+            <button class="ghost-btn" id="btn-import">Import a file</button>
+          </div>
+          <input type="file" id="import-file" accept=".zip,.json" hidden />
+        </section>
       </div>
 
       <div class="set-panel" id="panel-author" role="tabpanel" aria-labelledby="tab-author">
