@@ -80,6 +80,8 @@
                 aria-selected="false">Cards</button>
         <button role="tab" id="rail-tab-events" data-section="events"
                 aria-selected="false">Events</button>
+        <button role="tab" id="rail-tab-plan" data-section="plan"
+                aria-selected="false">Plan</button>
       </div>
 
     </div>
@@ -108,6 +110,7 @@
       <button class="ghost-btn" id="btn-timeline">Timeline</button>
     </div>
     <div class="toc" id="event-list" hidden></div>
+    <div class="toc" id="plan-list" hidden></div>
     <div class="rail-foot">
       <span id="rail-total"></span>
     </div>
@@ -281,6 +284,13 @@
                   placeholder="What happened, and why it matters."></textarea>
       </div>
     </article>
+
+    <!-- Snowflake. Not a wizard, though it has one: Ingermanson's steps
+         loop, and a strict sequence fights the method exactly when it
+         is working. -->
+    <section class="board-wrap" id="plan-wrap" hidden aria-label="Plan">
+      <div class="plan" id="plan"></div>
+    </section>
 
     <!-- Mind map. Cards as nodes, edges where two share a scene or an
          event. Nothing authored — the whole graph falls out of the
