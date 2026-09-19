@@ -342,6 +342,7 @@ const RecordStore = (() => {
     if (type === 'scene') record.wordCount = countWords(record.body);
 
     const ok = await _write(type, id, record);
+    if (ok && type === 'card') invalidateCards();
     if (ok && typeof Sync !== 'undefined') Sync.markDirty(type, id);
     return ok;
   }
@@ -356,6 +357,7 @@ const RecordStore = (() => {
    */
   async function putLocal(type, id, rec) {
     if (!TYPES.includes(type) || !id || !rec) return false;
+    if (type === 'card') invalidateCards();
     return _write(type, id, rec);
   }
 
@@ -372,6 +374,7 @@ const RecordStore = (() => {
 
   // removeLocal(type, id) — sync applying a tombstone. No new tombstone.
   async function removeLocal(type, id) {
+    if (type === 'card') invalidateCards();
     return _erase(type, id);
   }
 
@@ -393,7 +396,11 @@ const RecordStore = (() => {
   let _currentProject = null;
 
   function currentProject() { return _currentProject; }
-  function setCurrentProject(id) { _currentProject = id || null; }
+  function setCurrentProject(id) {
+    // The index is project-scoped, so switching invalidates it too.
+    if (id !== _currentProject) invalidateCards();
+    _currentProject = id || null;
+  }
 
   async function createProject(title) {
     const id = newId();
@@ -846,7 +853,16 @@ const RecordStore = (() => {
   // buildCardIndex() → Map of lowercased name AND every alias → card.
   // One pass, so resolving a whole scene's links doesn't re-scan the
   // card set per link.
+  // Anything that changes a card's name, aliases or project membership
+  // has to drop the cached index. Leaving that to call sites meant the
+  // sync path — which writes cards without going through put() — left
+  // a stale index behind, and links to cards pulled from another
+  // device stayed grey until a reload.
+  let _cardIndexCache = null;
+  function invalidateCards() { _cardIndexCache = null; }
+
   async function buildCardIndex() {
+    if (_cardIndexCache) return _cardIndexCache;
     const index = new Map();
     for (const c of Object.values(await getAllIn('card'))) {
       const keys = [c.name, ...(c.aka || [])];
@@ -857,6 +873,7 @@ const RecordStore = (() => {
         if (key && !index.has(key)) index.set(key, c);
       }
     }
+    _cardIndexCache = index;
     return index;
   }
 
@@ -1164,7 +1181,7 @@ const RecordStore = (() => {
     // Cards
     createCard, findCardByName, CARD_TYPES,
     putImage, getImage, deleteImage,
-    extractLinks, buildCardIndex, linkGraph, resolveLink, LINK_RE,
+    extractLinks, buildCardIndex, linkGraph, resolveLink, invalidateCards, LINK_RE,
     // Events
     createEvent, getTimeline, eventsForCard, PRECISIONS,
     // Helpers

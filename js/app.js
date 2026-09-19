@@ -3699,12 +3699,10 @@ async function applySignIn(data, isNew, { eraseLocal } = {}) {
 // inline previews, no auto-replacement, nothing that rewrites what you
 // typed while you are typing it.
 
-let _cardIndexCache = null;
-function invalidateCardIndex() { _cardIndexCache = null; }
-async function cardIndex() {
-  if (!_cardIndexCache) _cardIndexCache = await RecordStore.buildCardIndex();
-  return _cardIndexCache;
-}
+// The store owns the cache now — a second copy here was the thing
+// that went stale, because only some paths knew to clear it.
+function invalidateCardIndex() { RecordStore.invalidateCards(); }
+async function cardIndex() { return RecordStore.buildCardIndex(); }
 
 // A CodeMirror overlay: runs alongside the markdown mode rather than
 // replacing it, so bold and headings still highlight normally.
@@ -5634,6 +5632,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await flushActiveScene();
     const pushed = await Sync.flush();
     const pulled = await Sync.pull();
+    invalidateCardIndex();
+    refreshWikilinkOverlay();
     await renderTree();
     if (pushed.ok && pulled.ok) showToast('Synced.');
     else showToast('Sync incomplete — it will retry on its own.');
@@ -5759,6 +5759,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     Sync.start();
     Sync.pull().then(r => {
       if (r?.migrated) return;     // handled by onAccountMigrated
+      // A pull can bring cards from another device. Without this the
+      // link overlay keeps the index it built at boot and those links
+      // render as unresolved until a reload.
+      invalidateCardIndex();
+      refreshWikilinkOverlay();
       renderTree();
     });
   }
