@@ -41,7 +41,7 @@
  * the network returns.
  */
 
-const SW_VERSION = 'v13';
+const SW_VERSION = 'v14';
 const CACHE = `recension-${SW_VERSION}`;
 const FONT_CACHE = 'recension-fonts';
 
