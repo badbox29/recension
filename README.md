@@ -106,21 +106,38 @@ or XML.
 
 ### Where your writing lives
 
-**IndexedDB is the source of truth.** Cloudflare KV is a replica. Losing the
-replica costs you sync; it does not cost you the book.
+**Sync is per record, not per document.** Each scene, card and event is its
+own KV key with its own metadata, so editing one scene uploads one scene
+rather than rewriting the manuscript. Because that metadata — title, word
+count, status, parent — rides in the key listing, a new device renders the
+entire manuscript outline from a single request, before downloading a word of
+prose.
 
-Sync is **per record**, not per document. Each scene, card and event is its own
-KV key with its own metadata, so editing one scene uploads one scene rather
-than rewriting the manuscript. Conflicts resolve by `updatedAt` at the record
-level. A dirty set persisted in IndexedDB survives a crash, so nothing is lost
-by closing the tab mid-sentence.
+**Writes land locally first.** Every edit goes to IndexedDB and replicates
+afterwards. That is why the app works offline, why a failed push costs
+nothing, and why a dirty set persisted in IndexedDB means closing the tab
+mid-sentence loses nothing.
 
-Because scene metadata — title, word count, status, parent — rides in the KV
-key listing, a new device renders the entire manuscript outline from a single
-request before downloading a word of prose.
+It is a statement about order, though, not about authority. With more than one
+device there is no single source of truth: each holds a complete copy, any can
+diverge, and KV is where copies exchange changes rather than a master they
+defer to. A record edited more recently on your phone overwrites the stored
+copy without asking.
 
-It works offline. The service worker caches the shell; writes queue and flush
-when the network returns.
+**Reconciliation is newest-wins, per record.** Edit *different* scenes on two
+devices and both survive — that is what per-record sync buys. Edit the *same*
+scene on two offline devices and the later `updatedAt` wins; the other version
+is gone. No merge, no conflict copy. The granularity keeps this rare, but rare
+is not never, and it is worth knowing before you rely on it.
+
+**Losing the worker costs you sync, not the book.** Every device that has
+synced holds the whole manuscript, and a pull never deletes local records that
+are merely absent upstream. One exception: card images are fetched from R2 only
+when you open that card, so a device may not hold images it has never looked
+at. The backup zip contains them.
+
+**It works offline.** The service worker caches the shell; writes queue and
+flush when the network returns.
 
 ### Security
 
