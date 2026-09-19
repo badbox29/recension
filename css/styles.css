@@ -2733,3 +2733,11 @@ html.dark {
      read as a move. The row menu stays the route there. */
   .toc-scene[draggable], .toc-chapter[draggable] { cursor: pointer; }
 }
+
+/* The suggestion list is capped and scrolls internally rather than
+   growing past the window edge — with a large cast the last few
+   options were unreachable. */
+.wl-complete {
+  max-height: 15rem;
+  overflow-y: auto;
+}
