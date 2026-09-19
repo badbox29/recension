@@ -2683,3 +2683,53 @@ html.dark {
   .sf-part { flex-direction: column; gap: 0.125rem; }
   .sf-role { width: auto; padding-top: 0; }
 }
+
+/* ══ Dragging ══════════════════════════════════════════════════════
+   Safe because undo exists, not because the gesture is careful. */
+
+.toc-scene[draggable], .toc-chapter[draggable] { cursor: grab; }
+.dragging { opacity: .4; }
+
+/* The drop indicator is a LINE ABOVE the row, not a box around it.
+   A box says "into this thing", which is exactly the ambiguity that
+   makes drag reordering land everything at the end of a container. */
+.drop-before {
+  position: relative;
+  background: var(--rule-soft);
+}
+.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: -1px;
+  height: 2px;
+  background: var(--rubric);
+}
+
+/* An add link doubling as "the end of this container" gets the line
+   below instead, because that's where the thing would land. */
+.toc-add.drop-before::before { top: auto; bottom: -1px; }
+
+/* Group headings accept drops too — the Unplaced heading is how a
+   scene gets back out of a chapter. */
+.toc-group-label.drop-before { color: var(--ink); }
+
+/* Undo offered in the toast. A move you meant needs no comment; a
+   move you didn't needs a way back that isn't a keyboard shortcut. */
+.toast-action {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--vellum);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--vellum) 45%, transparent);
+  border-radius: 3px;
+  padding: 0.0625rem 0.4375rem;
+  margin-left: 0.625rem;
+  cursor: pointer;
+}
+.toast-action:hover { background: color-mix(in srgb, var(--vellum) 18%, transparent); }
+
+@media (hover: none) {
+  /* Touch has no drag affordance worth the risk of a scroll being
+     read as a move. The row menu stays the route there. */
+  .toc-scene[draggable], .toc-chapter[draggable] { cursor: pointer; }
+}
