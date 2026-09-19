@@ -210,6 +210,7 @@ let _toastTimer = null;
 function showToast(msg, duration = 3000) {
   const t = $('toast');
   if (!t) return;
+  t.replaceChildren();          // clear an Undo button from a previous toast
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(_toastTimer);
@@ -405,6 +406,124 @@ async function switchProject(id) {
   if (scene && await RecordStore.get('scene', scene)) await openScene(scene);
   else showEmpty();
   refreshSyncState();
+}
+
+// ══ Structural undo ════════════════════════════════════════════════
+//
+// Drag is the expected gesture for reordering a document tree —
+// Scrivener, Ulysses, Obsidian and the rest all have it. What makes it
+// safe THERE is undo: a misdrop is one keystroke from repaired.
+//
+// So this exists before drag does. It covers structural moves only;
+// text undo is CodeMirror's job and already works per scene. Moving
+// chapter 19 to position 3 in a 90,000-word draft is the kind of
+// accident you might not notice for a week, and the remedy other
+// tools use is not "don't allow it".
+
+const UNDO_LIMIT = 30;
+const undoStack = [];
+
+function pushUndo(label, apply) {
+  undoStack.push({ label, apply });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+}
+
+async function undoLast() {
+  const step = undoStack.pop();
+  if (!step) { showToast('Nothing to undo.'); return; }
+  await step.apply();
+  await refreshAfterMove();
+  showToast(`Undone: ${step.label}`);
+}
+
+async function refreshAfterMove() {
+  await renderTree();
+  if (App.section === 'plan') renderPlan();
+  if (App.view === 'plan') renderSnowflake();
+  if (App.view === 'board') renderBoard();
+  refreshSyncState();
+}
+
+/**
+ * moveWithUndo(type, id, to, label) — the only path a structural move
+ * takes. Recording the undo at the same moment as the move is what
+ * stops the two drifting apart.
+ */
+async function moveWithUndo(type, id, to, label) {
+  const before = await RecordStore.moveRecord(type, id, to);
+  if (!before) return;
+  pushUndo(label, () => RecordStore.moveRecord(type, id, before));
+  await refreshAfterMove();
+
+  // Offered rather than announced. A move you meant needs no comment;
+  // a move you didn't needs a way back that doesn't require knowing a
+  // keyboard shortcut.
+  showUndoToast(label);
+}
+
+let _undoToastTimer = null;
+function showUndoToast(label) {
+  const t = $('toast');
+  t.replaceChildren();
+  t.append(el('span', null, label));
+  const b = el('button', 'toast-action', 'Undo');
+  b.addEventListener('click', () => { t.hidden = true; undoLast(); });
+  t.append(b);
+  t.hidden = false;
+  clearTimeout(_undoToastTimer);
+  _undoToastTimer = setTimeout(() => { t.hidden = true; }, 6000);
+}
+
+// ══ Dragging in the rail ═══════════════════════════════════════════
+//
+// A scene can be dropped between any two scenes, in any chapter; a
+// chapter between chapters, in any part or book. The drop target is
+// an INSERTION POINT, not a container — "into chapter 3" leaves the
+// position ambiguous and would land everything at the end.
+
+const drag = { type: null, id: null };
+
+function makeDraggable(node, type, id) {
+  node.draggable = true;
+  node.addEventListener('dragstart', e => {
+    drag.type = type; drag.id = id;
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox requires data to be set or the drag never starts.
+    e.dataTransfer.setData('text/plain', id);
+    node.classList.add('dragging');
+  });
+  node.addEventListener('dragend', () => {
+    node.classList.remove('dragging');
+    drag.type = drag.id = null;
+    for (const el of document.querySelectorAll('.drop-into, .drop-before'))
+      el.classList.remove('drop-into', 'drop-before');
+  });
+}
+
+/**
+ * dropZone(node, accept, describe, onDrop)
+ *
+ * `describe` returns where this would land, shown as a line above the
+ * row rather than a highlight around it — a highlight says "into this
+ * thing", which is the ambiguity we're avoiding.
+ */
+function dropZone(node, accept, onDrop) {
+  node.addEventListener('dragover', e => {
+    if (drag.type !== accept || !drag.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    node.classList.add('drop-before');
+  });
+  node.addEventListener('dragleave', () => node.classList.remove('drop-before'));
+  node.addEventListener('drop', async e => {
+    node.classList.remove('drop-before');
+    if (drag.type !== accept || !drag.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const id = drag.id;
+    drag.type = drag.id = null;
+    await onDrop(id);
+  });
 }
 
 // ── Contents tree ──────────────────────────────────────────────────
@@ -779,19 +898,30 @@ async function renderTree() {
         onOpen: () => { setCollapsed(part.id, !pCollapsed); renderTree(); },
       });
       pRow.prepend(caretFor(part.id, pCollapsed, renderTree));
+      dropZone(pRow, 'chapter', async id =>
+        moveWithUndo('chapter', id, { parentId: part.id, bookId: work.id, index: 999 },
+                     `Moved into “${part.title}”`));
       toc.append(pRow);
       if (pCollapsed) continue;
 
       for (const ch of part.chapters) toc.append(...chapterRows(ch, 'toc-chapter in-part'));
-      toc.append(addLink('+ chapter', 'toc-add-chapter in-part',
-        () => newChapter(work.id, part.id)));
+      const addInPart = addLink('+ chapter', 'toc-add-chapter in-part',
+        () => newChapter(work.id, part.id));
+      dropZone(addInPart, 'chapter', async id =>
+        moveWithUndo('chapter', id, { parentId: part.id, bookId: work.id, index: 999 },
+                     `Moved to the end of “${part.title}”`));
+      toc.append(addInPart);
     }
 
     // Chapters sitting directly under the work. Parts are optional, and a
     // book with none — which is most books — looks exactly like this.
     for (const ch of work.looseChapters) toc.append(...chapterRows(ch, 'toc-chapter'));
 
-    toc.append(addLink('+ chapter', 'toc-add-chapter', () => newChapter(work.id, null)));
+    const addLoose = addLink('+ chapter', 'toc-add-chapter', () => newChapter(work.id, null));
+    dropZone(addLoose, 'chapter', async id =>
+      moveWithUndo('chapter', id, { parentId: null, bookId: work.id, index: 999 },
+                   `Moved into “${work.title}”`));
+    toc.append(addLoose);
     toc.append(addLink('+ part', 'toc-add-part-inner', () => newPart(work.id)));
   }
 
@@ -804,12 +934,22 @@ async function renderTree() {
   // tier. It sits above Unplaced, which is a trailing catch-all.
   toc.append(addLink('+ book', 'toc-add-part', newWork));
 
-  toc.append(el('div', 'toc-group-label', 'Unplaced'));
+  // Unplaced is a real destination, not only a source. Before drag it
+  // was a hole: three ways in and none out.
+  const unplacedHead = el('div', 'toc-group-label', 'Unplaced');
+  dropZone(unplacedHead, 'scene', async id =>
+    moveWithUndo('scene', id, { parentId: null, index: 0 }, 'Moved to Unplaced'));
+  toc.append(unplacedHead);
+
   for (const sc of App.tree.unfiled) toc.append(sceneRow(sc));
-  toc.append(addLink('+ scene', '', async () => {
+
+  const addUnplaced = addLink('+ scene', '', async () => {
     const id = await RecordStore.createScene(null);
     if (id) { await renderTree(); openScene(id); }
-  }));
+  });
+  dropZone(addUnplaced, 'scene', async id =>
+    moveWithUndo('scene', id, { parentId: null, index: 999 }, 'Moved to Unplaced'));
+  toc.append(addUnplaced);
 
   $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
 }
@@ -836,6 +976,22 @@ function caretFor(id, collapsed, rerender) {
 // "+ scene" link, as a flat array. Flat rather than nested because the
 // rail is a single scrolling column; nesting DOM here would buy nothing
 // and complicate the indentation, which is carried by className.
+// A chapter's position among its siblings — those in the same part,
+// or those directly under the same book.
+function chapterIndex(ch) {
+  const t = App.tree;
+  if (!t) return 0;
+  for (const w of t.works) {
+    if (ch.partId) {
+      const p = w.parts.find(x => x.id === ch.partId);
+      if (p) return Math.max(0, p.chapters.findIndex(c => c.id === ch.id));
+    } else if (w.id === ch.bookId) {
+      return Math.max(0, w.looseChapters.findIndex(c => c.id === ch.id));
+    }
+  }
+  return 0;
+}
+
 function chapterRows(ch, className) {
   const rows = [];
   const chWords = ch.scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
@@ -850,20 +1006,34 @@ function chapterRows(ch, className) {
     onOpen: () => { setCollapsed(ch.id, !collapsed); renderTree(); },
   });
   row.prepend(caretFor(ch.id, collapsed, renderTree));
+  makeDraggable(row, 'chapter', ch.id);
+  dropZone(row, 'chapter', async id => {
+    if (id === ch.id) return;
+    await moveWithUndo('chapter', id,
+      { parentId: ch.partId || null, bookId: ch.bookId, index: chapterIndex(ch) },
+      `Moved before “${ch.title || 'chapter'}”`);
+  });
   rows.push(row);
   if (collapsed) return rows;
 
   for (const sc of ch.scenes) rows.push(sceneRow(sc, deep));
 
-  rows.push(addLink('+ scene', deep ? 'in-part' : '', async () => {
+  const add = addLink('+ scene', deep ? 'in-part' : '', async () => {
     const id = await RecordStore.createScene(ch.id);
     if (id) { await renderTree(); openScene(id); }
-  }));
+  });
+  // The add link at the foot of a chapter is also the drop target for
+  // "at the end of this chapter" — including an empty one, which
+  // otherwise has no row to aim at.
+  dropZone(add, 'scene', async id =>
+    moveWithUndo('scene', id, { parentId: ch.id, index: 999 },
+                 `Moved to the end of “${ch.title || 'chapter'}”`));
+  rows.push(add);
   return rows;
 }
 
 function sceneRow(sc, deep = false) {
-  return tocLine('button', {
+  const row = tocLine('button', {
     className: deep ? 'toc-scene in-part' : 'toc-scene',
     kind: 'scene', id: sc.id,
     title: sc.title,
@@ -872,6 +1042,28 @@ function sceneRow(sc, deep = false) {
     current: place().openSceneId === sc.id,
     onOpen: () => { openScene(sc.id); if (App.readOnly) closeRail(); },
   });
+
+  makeDraggable(row, 'scene', sc.id);
+  // Dropping ON a scene means "before this one" — the line drawn above
+  // the row says so. Landing "inside" a scene would mean nothing.
+  dropZone(row, 'scene', async id => {
+    if (id === sc.id) return;
+    const at = await indexOfScene(sc.chapterId, sc.id);
+    await moveWithUndo('scene', id, { parentId: sc.chapterId, index: at },
+                       `Moved before “${sc.title || 'scene'}”`);
+  });
+  return row;
+}
+
+// Where a scene sits among its siblings, so a drop can be placed
+// relative to it rather than appended.
+async function indexOfScene(chapterId, sceneId) {
+  const tree = App.tree || await RecordStore.getTree();
+  const all = chapterId
+    ? (RecordStore.allChapters(tree).find(c => c.id === chapterId)?.scenes || [])
+    : (tree.unfiled || []);
+  const i = all.findIndex(s => s.id === sceneId);
+  return i === -1 ? all.length : i;
 }
 
 // ── Continuous read-through ────────────────────────────────────────
@@ -5712,6 +5904,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (id) { e.preventDefault(); editFromRead(id); }
     }
   });
+
+  // Ctrl/Cmd-Z undoes a structural move — but never while the caret is
+  // in text. Text undo belongs to CodeMirror and already works.
+  document.addEventListener('keydown', e => {
+    if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z' || e.shiftKey) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if (document.activeElement?.closest?.('.CodeMirror')) return;
+    if (!undoStack.length) return;
+    e.preventDefault();
+    undoLast();
+  }, true);
 
   // Ctrl/Cmd-K opens search — where a decade of other tools have
   // trained everyone's hands to reach. Captured, so it works from

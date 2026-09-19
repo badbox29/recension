@@ -1067,6 +1067,73 @@ const RecordStore = (() => {
     };
   }
 
+  // ══ Moving things ════════════════════════════════════════════════
+  //
+  // Order lives on the child record, so a move is a write to the thing
+  // being moved plus a renumber of its new siblings. No parent holds
+  // an array of ids to keep in step.
+  //
+  // Renumbering uses whole integers rather than fractional midpoints.
+  // Fractions avoid touching siblings but drift toward unreadable
+  // precision after enough moves, and at a chapter's worth of scenes
+  // the cost of rewriting the siblings is nothing.
+
+  const PARENT_FIELD = { scene: 'chapterId', chapter: 'partId', book: 'projectId' };
+
+  function siblingsOf(all, type, parentId, chapterParentBook = null) {
+    return sortByOrder(Object.values(all).filter(r => {
+      if (type === 'chapter') {
+        // A chapter hangs off a part OR directly off a book, so its
+        // parent is whichever is set.
+        return (r.partId || null) === (parentId || null) &&
+               (parentId ? true : (r.bookId || null) === (chapterParentBook || null));
+      }
+      return (r[PARENT_FIELD[type]] || null) === (parentId || null);
+    }));
+  }
+
+  /**
+   * moveRecord(type, id, { parentId, bookId, index }) — reposition one
+   * record, returning what it takes to put it back.
+   *
+   * The return value is the undo: the parent and index it came from.
+   * Structural moves are the one place in the app where a single
+   * gesture can reorganise a manuscript, so every one of them has to
+   * be reversible.
+   */
+  async function moveRecord(type, id, { parentId = null, bookId = null, index = null } = {}) {
+    const rec = await get(type, id);
+    if (!rec) return null;
+
+    const all = await getAll(type);
+    const field = PARENT_FIELD[type];
+    const before = {
+      parentId: rec[field] || null,
+      bookId: type === 'chapter' ? (rec.bookId || null) : null,
+      index: siblingsOf(all, type, rec[field] || null, rec.bookId || null)
+        .findIndex(r => r.id === id),
+    };
+
+    const updated = { ...rec, [field]: parentId || null };
+    if (type === 'chapter') {
+      // A chapter always knows its book, whether or not it sits in a part.
+      updated.bookId = bookId || rec.bookId || null;
+    }
+
+    const target = siblingsOf(all, type, parentId || null, updated.bookId)
+      .filter(r => r.id !== id);
+    const at = index === null || index > target.length ? target.length : Math.max(0, index);
+    target.splice(at, 0, updated);
+
+    for (let i = 0; i < target.length; i++) {
+      const r = target[i];
+      const next = r.id === id ? { ...updated, order: i } : { ...r, order: i };
+      if (r.order !== i || r.id === id) await put(type, r.id, next);
+    }
+
+    return before;
+  }
+
   // ── Structural deletes ────────────────────────────────────────────
   //
   // Only a scene holds prose, so only deleting a scene can lose words.
@@ -1172,6 +1239,7 @@ const RecordStore = (() => {
     // Core
     get, getAll, getIndex, put, putLocal, remove, removeLocal,
     // Tree
+    moveRecord,
     createBeat, beatsAt, beatTree, unplannedScenes, deleteBeat,
     BEAT_LEVELS, BEAT_ROLES,
     createProject, listProjects, deleteProject, ensureProject,
