@@ -1395,6 +1395,15 @@ function ensureEditor() {
     updateAutocomplete(sel);
   });
 
+  // The list is fixed-position and the caret is not, so a scrolling
+  // sheet would otherwise leave it hovering over unrelated text.
+  $('sheet').addEventListener('scroll', () => {
+    if (_acBox) positionAutocomplete(cm);
+  }, { passive: true });
+  window.addEventListener('resize', () => {
+    if (_acBox) positionAutocomplete(cm);
+  });
+
   cm.on('blur', () => {
     setTimeout(closeAutocomplete, 120);
     concealWikilinks(cm);      // nothing should stay expanded once you leave
@@ -4080,10 +4089,38 @@ function drawAutocomplete(cm) {
     _acBox.append(row);
   });
 
+  positionAutocomplete(cm);
+}
+
+/**
+ * positionAutocomplete(cm) — place the list near the caret, in the
+ * viewport.
+ *
+ * Two things this has to get right. It flips ABOVE the caret when
+ * there isn't room below, instead of running off the bottom of the
+ * window where the last options can't be reached. And it re-runs on
+ * scroll: the box is position:fixed but the caret is not, so a
+ * scrolling sheet leaves the list stranded over unrelated text.
+ */
+function positionAutocomplete(cm) {
+  if (!_acBox) return;
   const anchor = _acMode === 'wrap' && _acWrap ? _acWrap.to : true;
   const co = cm.cursorCoords(anchor, 'window');
-  _acBox.style.top = `${co.bottom + 4}px`;
-  _acBox.style.left = `${Math.min(co.left, window.innerWidth - 260)}px`;
+
+  const gap = 6;
+  const h = _acBox.offsetHeight;
+  const w = _acBox.offsetWidth;
+
+  const below = window.innerHeight - co.bottom - gap;
+  const above = co.top - gap;
+  // Prefer below, but only if the whole list fits — a half-visible
+  // list is worse than one that opened the other way.
+  const flip = below < h && above > below;
+
+  _acBox.style.top = flip
+    ? `${Math.max(8, co.top - gap - h)}px`
+    : `${Math.min(co.bottom + gap, window.innerHeight - h - 8)}px`;
+  _acBox.style.left = `${Math.max(8, Math.min(co.left, window.innerWidth - w - 8))}px`;
 }
 
 function acceptAutocomplete(cm, i = _acIndex) {
