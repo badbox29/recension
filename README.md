@@ -32,6 +32,10 @@ wrote.
 **Drafting.** A markdown editor with typewriter scrolling, adjustable measure
 and type size, and a four-level manuscript tree: project → book → part →
 chapter → scene. Parts are optional, because most novels don't have them.
+Scenes and chapters drag to reorder, and every structural move is undoable —
+which is the part that matters. Moving chapter 19 to position 3 in a
+90,000-word draft is an accident you might not notice for a week, so Ctrl-Z
+reverses it and the confirmation offers a way back.
 
 **Reading.** Scenes concatenated into a continuous read-through, at any level.
 Deliberately read-only: reading a draft and revising it are different
@@ -186,9 +190,6 @@ already there.
 
 ## Deliberate omissions
 
-- **No drag reordering.** Every other structural action here confirms first.
-  Drag commits on release with no undo, and moving chapter 19 to position 3 in
-  a 90,000-word draft is the kind of accident you might not notice for a week.
 - **Editing switches off on narrow screens.** Below about 700px the manuscript
   becomes read-only: the rail turns into a drawer and the prose renders rather
   than opening an editor. Wider than that — a tablet, a folding phone unfolded
