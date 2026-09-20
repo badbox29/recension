@@ -5861,9 +5861,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await flushActiveScene();
     const pushed = await Sync.flush();
     const pulled = await Sync.pull();
-    invalidateCardIndex();
-    refreshWikilinkOverlay();
-    await renderTree();
+    await afterPull();
     if (pushed.ok && pulled.ok) showToast('Synced.');
     else showToast('Sync incomplete — it will retry on its own.');
     Sync.lastSyncTime().then(t => {
@@ -5997,14 +5995,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (!Auth.isGuest() && App.data.workerUrl) {
     Sync.start();
-    Sync.pull().then(r => {
+    Sync.pull().then(async r => {
       if (r?.migrated) return;     // handled by onAccountMigrated
-      // A pull can bring cards from another device. Without this the
-      // link overlay keeps the index it built at boot and those links
-      // render as unresolved until a reload.
-      invalidateCardIndex();
-      refreshWikilinkOverlay();
-      renderTree();
+      await afterPull();
     });
   }
 
@@ -6026,6 +6019,38 @@ document.addEventListener('DOMContentLoaded', async () => {
  * shouldn't have to answer a question about a change you didn't ask
  * for, and the app looks identical afterwards.
  */
+/**
+ * afterPull() — settle up once records have arrived from elsewhere.
+ *
+ * Two things can only be dealt with here, because both depend on
+ * seeing what another device did.
+ *
+ * The migration ran on every device BEFORE its first pull, so each
+ * minted its own project for the same content. Once they sync, a book
+ * can sit in one project and its cards in another, and every link
+ * between them reads as unresolved. reconcileAutoProjects() merges
+ * them, deterministically, so every device picks the same survivor.
+ *
+ * And a pull can bring new cards, which the link index must be told
+ * about or links to them stay grey until a reload.
+ */
+async function afterPull() {
+  const merged = await RecordStore.reconcileAutoProjects();
+  if (merged) {
+    RecordStore.setCurrentProject(merged);
+    App.data.lastProjectId = merged;
+    saveLocal();
+    await renderProjectName();
+    showToast('Projects from your devices have been merged.', 6000);
+  }
+
+  invalidateCardIndex();
+  refreshWikilinkOverlay();
+  await renderTree();
+  if (App.section === 'cards') renderCards();
+  if (App.section === 'events') renderEvents();
+}
+
 async function openLastProject() {
   const home = await RecordStore.ensureProject();
 

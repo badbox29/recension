@@ -402,13 +402,54 @@ const RecordStore = (() => {
     _currentProject = id || null;
   }
 
-  async function createProject(title) {
+  // `auto` marks a project the MIGRATION created rather than one the
+  // user asked for. It matters because the migration runs per device:
+  // two devices holding the same pre-project content each minted their
+  // own, and the records then split between them. Only auto projects
+  // are ever merged; a project you made is never touched.
+  async function createProject(title, { auto = false } = {}) {
     const id = newId();
     const all = await getAll('project');
     const ok = await put('project', id, {
       id, title: title || 'Untitled project', order: nextOrder(all),
+      ...(auto ? { auto: true } : {}),
     });
     return ok ? id : null;
+  }
+
+  /**
+   * reconcileAutoProjects() — undo the split.
+   *
+   * ensureProject() ran on every device before the first pull, so each
+   * created its own project for the same content. Once they sync, the
+   * records are divided between projects that were all meant to be the
+   * same one: a book under project A, its cards under project B, and
+   * every link between them unresolved.
+   *
+   * The survivor is chosen DETERMINISTICALLY — oldest createdAt, then
+   * lowest id — so every device independently picks the same one and
+   * they converge instead of fighting.
+   *
+   * Returns the surviving id, or null if there was nothing to fix.
+   */
+  async function reconcileAutoProjects() {
+    const autos = Object.values(await getAll('project')).filter(p => p.auto);
+    if (autos.length < 2) return null;
+
+    autos.sort((a, b) =>
+      (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id));
+    const keep = autos[0];
+    const drop = new Set(autos.slice(1).map(p => p.id));
+
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (drop.has(rec.projectId)) await put(type, rec.id, { ...rec, projectId: keep.id });
+      }
+    }
+    for (const id of drop) await remove('project', id);
+
+    invalidateCards();
+    return keep.id;
   }
 
   async function listProjects() {
@@ -454,7 +495,7 @@ const RecordStore = (() => {
     if (!projects.length && !strays) {
       // Genuinely empty account. One project so there is somewhere to
       // put the first book.
-      const id = await createProject('My writing');
+      const id = await createProject('My writing', { auto: true });
       setCurrentProject(id);
       return id;
     }
@@ -462,7 +503,7 @@ const RecordStore = (() => {
     let home = projects[0]?.id;
     if (strays && !home) {
       const name = sortByOrder(orphans.book)[0]?.title || 'My writing';
-      home = await createProject(name);
+      home = await createProject(name, { auto: true });
     }
 
     if (strays) {
@@ -1242,7 +1283,7 @@ const RecordStore = (() => {
     moveRecord,
     createBeat, beatsAt, beatTree, unplannedScenes, deleteBeat,
     BEAT_LEVELS, BEAT_ROLES,
-    createProject, listProjects, deleteProject, ensureProject,
+    createProject, listProjects, deleteProject, ensureProject, reconcileAutoProjects,
     currentProject, setCurrentProject, getAllIn, PROJECT_SCOPED,
     createBook, createPart, createChapter, createScene, getTree, allChapters,
     deleteBook, deletePart, deleteChapter, deleteScene,
