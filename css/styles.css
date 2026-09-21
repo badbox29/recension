@@ -2741,3 +2741,9 @@ html.dark {
   max-height: 15rem;
   overflow-y: auto;
 }
+
+.row-hint { color: var(--ink-faint); font-size: var(--t-xs); margin-left: 0.25rem; }
+
+/* contenteditable input needs the same caret and selection treatment
+   the textarea mode had, or the switch shows. */
+.prose .CodeMirror [contenteditable="true"] { outline: none; caret-color: var(--ink); }
