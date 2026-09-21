@@ -160,7 +160,12 @@ function saveAccount() {
 // Stored per-device. It depends on the monitor you're sitting at, so
 // syncing it across devices would be actively wrong.
 
-const TYPE_DEFAULTS = { measure: 'book', size: 'md', readTitles: true };
+const TYPE_DEFAULTS = {
+  measure: 'book', size: 'md', readTitles: true,
+  // Per device, like the rest of this object — the spelling dictionary
+  // lives in the browser, and autocorrect is a keyboard behaviour.
+  spellcheck: true, autocorrect: true,
+};
 
 function loadTypography() {
   let t = TYPE_DEFAULTS;
@@ -1317,6 +1322,35 @@ function exitRead() {
 
 
 
+// ── Writing aids ───────────────────────────────────────────────────
+//
+// CodeMirror is a code editor, and it deliberately switches off
+// everything a browser does to help with prose: it sets spellcheck,
+// autocorrect and autocapitalize to "off" on its input. Sensible for
+// code, wrong for a novel — on a phone it meant no capital letter
+// after a full stop.
+//
+// Both are toggleable because both have a real cost here: spell check
+// flags every name in the book until you teach the dictionary, and a
+// phone's autocorrect will happily "fix" callsigns and surnames.
+
+function applyWritingAids() {
+  const cm = App.editor?.codemirror;
+  if (!cm) return;
+  const input = cm.getInputField();
+  const t = App.typography || {};
+  const spell = t.spellcheck !== false;
+  const assist = t.autocorrect !== false;
+
+  input.setAttribute('spellcheck', String(spell));
+  // "sentences" rather than "on": capitalise after a full stop, not
+  // every word.
+  input.setAttribute('autocapitalize', assist ? 'sentences' : 'off');
+  input.setAttribute('autocorrect', assist ? 'on' : 'off');
+  // The attribute alone doesn't make an existing surface re-check.
+  cm.refresh();
+}
+
 // ── Editor ─────────────────────────────────────────────────────────
 
 function ensureEditor() {
@@ -1325,15 +1359,26 @@ function ensureEditor() {
     element: $('editor'),
     toolbar: false,
     status: false,
+    // EasyMDE's own checker downloads a dictionary from a CDN, which
+    // breaks offline. The browser's is better and already knows the
+    // words you've taught it.
     spellChecker: false,
+    nativeSpellcheck: true,
+    // The browser can only draw spelling squiggles on a contenteditable
+    // surface. CodeMirror's default input is an invisible textarea, so
+    // native spell check "worked" but had nowhere to show anything.
+    inputStyle: 'contenteditable',
     autofocus: false,
     placeholder: 'Begin.',
     lineWrapping: true,
-    // Markdown in, markdown out. No smart substitution — an editor that
-    // rewrites what you typed is an editor you have to fight.
     autoDownloadFontAwesome: false,
   });
   const cm = App.editor.codemirror;
+  // Older EasyMDE builds don't pass inputStyle through; set it directly.
+  if (cm.getOption('inputStyle') !== 'contenteditable') {
+    cm.setOption('inputStyle', 'contenteditable');
+  }
+  applyWritingAids();
 
   let _overlayTimer = null;
   cm.on('change', () => {
@@ -1705,6 +1750,8 @@ function bindSettingsTabs() {
 function openSettings() {
   $('set-dark').checked = document.documentElement.classList.contains('dark');
   $('set-typewriter').checked = !!App.data.typewriter;
+  $('set-spellcheck').checked = App.typography?.spellcheck !== false;
+  $('set-autocorrect').checked = App.typography?.autocorrect !== false;
   $('set-worker').value = App.data.workerUrl || '';
 
   Sync.lastSyncTime().then(t => {
@@ -3685,6 +3732,35 @@ async function newEvent() {
   if (!id) return;
   await renderEvents();
   openEvent(id);
+}
+
+// ── Writing aids ───────────────────────────────────────────────────
+//
+// CodeMirror is a code editor, and it deliberately switches off
+// everything a browser does to help with prose: it sets spellcheck,
+// autocorrect and autocapitalize to "off" on its input. Sensible for
+// code, wrong for a novel — on a phone it meant no capital letter
+// after a full stop.
+//
+// Both are toggleable because both have a real cost here: spell check
+// flags every name in the book until you teach the dictionary, and a
+// phone's autocorrect will happily "fix" callsigns and surnames.
+
+function applyWritingAids() {
+  const cm = App.editor?.codemirror;
+  if (!cm) return;
+  const input = cm.getInputField();
+  const t = App.typography || {};
+  const spell = t.spellcheck !== false;
+  const assist = t.autocorrect !== false;
+
+  input.setAttribute('spellcheck', String(spell));
+  // "sentences" rather than "on": capitalise after a full stop, not
+  // every word.
+  input.setAttribute('autocapitalize', assist ? 'sentences' : 'off');
+  input.setAttribute('autocorrect', assist ? 'on' : 'off');
+  // The attribute alone doesn't make an existing surface re-check.
+  cm.refresh();
 }
 
 // ── Editor ─────────────────────────────────────────────────────────
@@ -5840,6 +5916,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.documentElement.classList.toggle('dark', e.target.checked);
     try { localStorage.setItem(DARK_KEY, JSON.stringify(e.target.checked)); } catch {}
   });
+  $('set-spellcheck').addEventListener('change', e => {
+    applyTypography({ ...App.typography, spellcheck: e.target.checked });
+    applyWritingAids();
+  });
+  $('set-autocorrect').addEventListener('change', e => {
+    applyTypography({ ...App.typography, autocorrect: e.target.checked });
+    applyWritingAids();
+  });
+
   $('set-typewriter').addEventListener('change', e => {
     App.data.typewriter = e.target.checked;
     saveAccount();
