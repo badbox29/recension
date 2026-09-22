@@ -1860,18 +1860,15 @@ async function renderSyncStatus() {
 
   if (guest) return;
 
-  line('Worker', App.data.workerUrl || 'not set', !App.data.workerUrl);
-
-  const last = await Sync.lastSyncTime();
-  line('Last synced', last ? new Date(last).toLocaleString() : 'never', !last);
-
+  // The worker address and last-sync time live in the Worker section
+  // above; repeating them here made the panel look busier than it is.
   const pending = await Sync.pendingCount();
   // Pending is the number that matters: it is how much of today's
   // writing exists only here.
   line('Waiting to upload', pending ? `${pending} change${pending === 1 ? '' : 's'}` : 'nothing',
        pending > 20);
 
-  if (!App.data.workerUrl) return;
+  if (!App.data.workerUrl) { line('Worker', 'not set', true); return; }
 
   line('Reachable', 'checking…');
   try {
