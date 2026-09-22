@@ -65,6 +65,7 @@
  *   onStatus        fn  (status, detail) → 'idle'|'syncing'|'error'|'offline'
  *   onProgress      fn  ({done, total, phase}) → optional, fresh-device UI
  *   onAuthFailure   fn  () → Promise<bool>; true = credentials refreshed, retry
+ *   onPulled        fn  (result) → after a scheduled or visibility pull succeeds
  *   toast           fn  (message)
  * ============================================================
  */
@@ -77,7 +78,11 @@ const Sync = (() => {
   const BULK_READ_MAX   = 100;   // must not exceed worker's BULK_READ_MAX
   const BULK_WRITE_MAX  = 50;    // must not exceed worker's BULK_WRITE_MAX
   const FLUSH_DEBOUNCE  = 10_000;      // 10s after last edit
-  const PERIODIC_FLOOR  = 5 * 60_000;  // 5min catch-all
+  // Two minutes, while visible. A pull that finds nothing new costs one
+  // key listing — metadata only, no bodies — so this is cheap, and it's
+  // the lag you'd otherwise see with a phone left open beside the
+  // desktop. Returning to the app pulls immediately regardless.
+  const PERIODIC_FLOOR  = 2 * 60_000;
   const MAX_BACKOFF     = 5 * 60_000;
   const TOMBSTONE_TTL   = 90 * 24 * 60 * 60 * 1000; // 90 days
 
@@ -647,22 +652,69 @@ const Sync = (() => {
 
   let _periodic = null;
 
-  function start() {
-    stop();
-    _periodic = setInterval(() => { flush(); }, PERIODIC_FLOOR);
+  // ── When to pull ──────────────────────────────────────────────────
+  //
+  // Returning to the app is the moment another device's changes matter
+  // most, and it was the one moment this didn't reliably catch.
+  // `focus` doesn't fire when you switch back to an installed app on
+  // Android; `visibilitychange` does. Both are listened for, and both
+  // go through one throttle so switching back and forth doesn't
+  // hammer the worker.
+  //
+  // The periodic timer used to FLUSH ONLY. With nothing pulling on a
+  // schedule, a phone left open never saw desktop edits until you
+  // backgrounded and returned — which is where "it took several
+  // minutes" came from.
 
-    // Tab hidden / app backgrounded — flush now rather than waiting out the
-    // debounce, since the tab may never come back.
+  const PULL_THROTTLE = 15_000;
+  let _lastPull = 0;
+  let _pullInFlight = null;
+
+  async function pullSoon() {
+    if (C?.isGuest?.() || !base()) return;
+    if (_pullInFlight) return _pullInFlight;
+    if (Date.now() - _lastPull < PULL_THROTTLE) return;
+    _lastPull = Date.now();
+    _pullInFlight = pull()
+      .then(async r => { if (r?.ok) await C.onPulled?.(r); return r; })
+      .finally(() => { _pullInFlight = null; });
+    return _pullInFlight;
+  }
+
+  // Listeners go on ONCE. start() is called on boot, on sign-in and on
+  // saving a worker address; adding them each time stacked duplicates,
+  // so a long session could fire several pulls for one tab switch.
+  let _listening = false;
+  function listenOnce() {
+    if (_listening) return;
+    _listening = true;
+
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flush();
+      if (document.visibilityState === 'hidden') {
+        // Backgrounded — flush now; the tab may never come back.
+        flush();
+      } else {
+        pullSoon();
+      }
     });
 
-    // Last-chance best effort. Not guaranteed to complete; the dirty set is
-    // persisted precisely so an interrupted flush costs nothing.
+    // Last-chance best effort. Not guaranteed to complete; the dirty set
+    // is persisted precisely so an interrupted flush costs nothing.
     window.addEventListener('pagehide', () => { flush(); });
 
-    // Returning to the tab: pull, in case another device wrote while away.
-    window.addEventListener('focus', () => { pull(); });
+    window.addEventListener('focus', () => { pullSoon(); });
+    window.addEventListener('online', () => { flush(); pullSoon(); });
+  }
+
+  function start() {
+    stop();
+    listenOnce();
+    _periodic = setInterval(() => {
+      flush();
+      // Only while visible. A backgrounded tab pulling every few minutes
+      // is battery spent on a screen nobody is looking at.
+      if (document.visibilityState === 'visible') pullSoon();
+    }, PERIODIC_FLOOR);
   }
 
   function stop() {
@@ -687,6 +739,7 @@ const Sync = (() => {
     flush,
     pushAccount: pushAccountRecord,
     pull,
+    pullSoon,
     freshDeviceSync,
     scheduleFlush,
     checkAccountMigrated,

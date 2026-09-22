@@ -5721,6 +5721,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (phase === 'records' && total) setSyncState('syncing', `Fetching ${done}/${total}`);
     },
     onOutlineReady: () => renderTree(),
+    // Background pulls (returning to the app, the periodic timer) have
+    // to settle up the same way the boot pull does — merging split
+    // projects and refreshing link resolution — or they'd bring records
+    // in that the screen never reflects.
+    onPulled: () => afterPull(),
 
     /**
      * This device is holding a token that has since been upgraded to
