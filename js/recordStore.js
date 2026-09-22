@@ -506,6 +506,190 @@ const RecordStore = (() => {
     return keep.id;
   }
 
+  async function listProjects() {
+    return sortByOrder(Object.values(await getAll('project')));
+  }
+
+  // getAllIn(type) — records of a project-scoped type belonging to the
+  // current project. Everything that draws the rail, the grid, the map
+  // or the timeline goes through here, so a second project can never
+  // bleed into the first one's views.
+  async function getAllIn(type) {
+    const all = await getAll(type);
+    if (!PROJECT_SCOPED.includes(type) || !_currentProject) return all;
+    const out = {};
+    for (const [id, rec] of Object.entries(all)) {
+      if ((rec.projectId || null) === _currentProject) out[id] = rec;
+    }
+    return out;
+  }
+
+  /**
+   * ensureProject() — one-time migration, silent.
+   *
+   * Everything written before projects existed has no projectId. Rather
+   * than asking about it, adopt it: create one project named after the
+   * first book and assign every orphan to it. Runs once — after it, any
+   * record without a projectId is genuinely new and gets the current
+   * one at creation.
+   *
+   * Returns the id to open.
+   */
+  async function ensureProject() {
+    const projects = await listProjects();
+
+    const orphans = { book: [], card: [], event: [], beat: [] };
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (!rec.projectId) (orphans[type] ||= []).push(rec);
+      }
+    }
+    const strays = PROJECT_SCOPED.reduce((n, t) => n + (orphans[t]?.length || 0), 0);
+
+    if (!projects.length && !strays) {
+      // Genuinely empty account. One project so there is somewhere to
+      // put the first book.
+      const id = await createProject('My writing', { auto: true });
+      setCurrentProject(id);
+      return id;
+    }
+
+    let home = projects[0]?.id;
+    if (strays && !home) {
+      const name = sortByOrder(orphans.book)[0]?.title || 'My writing';
+      home = await createProject(name, { auto: true });
+    }
+
+    if (strays) {
+      for (const type of PROJECT_SCOPED) {
+        for (const rec of (orphans[type] || [])) {
+          await _write(type, rec.id, { ...rec, projectId: home });
+          if (typeof Sync !== 'undefined') Sync.markDirty(type, rec.id);
+        }
+      }
+    }
+
+    setCurrentProject(home);
+    return home;
+  }
+
+  async function deleteProject(id) {
+    // Detach rather than destroy, as everywhere else — the books and
+    // cards survive and can be moved into another project. Only a
+    // scene deletion is allowed to lose words.
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (rec.projectId === id) await put(type, rec.id, { ...rec, projectId: null });
+      }
+    }
+    return remove('project', id);
+  }
+
+  // ══ Snowflake ════════════════════════════════════════════════════
+  //
+  // Ingermanson's method models a story at increasing magnification:
+  // a sentence, then a paragraph, then a paragraph per sentence, then
+  // a page per paragraph. Every element expands exactly one element
+  // from the level above, and that parentage is the whole point — it
+  // is what makes step 4 a magnification of step 2 rather than a
+  // second, unrelated document.
+  //
+  // So beats are a tree, not four text fields. A tool that stored the
+  // four levels as four blobs would be a form; this can answer which
+  // paragraph expands which sentence, and which scenes dramatize
+  // which beat.
+
+  const BEAT_LEVELS = { 2: 'sentence', 3: 'paragraph', 4: 'page' };
+
+  // The five Ingermanson names for the level-2 sentences. Five is his
+  // number, not a law: a sixth sentence gets a beat and no label
+  // rather than being crammed into the fifth.
+  const BEAT_ROLES = ['Setup', 'Disaster', 'Disaster', 'Disaster', 'Ending'];
+
+  async function createBeat({ parentId = null, level = 2, text = '', order = null } = {}) {
+    const id = newId();
+    const siblings = Object.fromEntries(
+      Object.entries(await getAllIn('beat'))
+        .filter(([, b]) => (b.parentId || null) === (parentId || null) && b.level === level));
+    const ok = await put('beat', id, {
+      id, projectId: _currentProject, parentId: parentId || null, level, text,
+      order: order ?? nextOrder(siblings),
+    });
+    return ok ? id : null;
+  }
+
+  // beatsAt(level, parentId) — one rung of the ladder, in order.
+  async function beatsAt(level, parentId = undefined) {
+    const all = Object.values(await getAllIn('beat')).filter(b => b.level === level);
+    const scoped = parentId === undefined
+      ? all : all.filter(b => (b.parentId || null) === (parentId || null));
+    return sortByOrder(scoped);
+  }
+
+  /**
+   * beatTree() — the expansion as a nested structure, with the scenes
+   * that dramatize each beat attached.
+   *
+   * The scene counts are what make the plan checkable against the
+   * book: a beat with no scenes is structure you planned and haven't
+   * written, and a beat carrying 18,000 words is a paragraph that got
+   * away from you.
+   */
+  async function beatTree() {
+    const beats = Object.values(await getAllIn('beat'));
+    const scenes = Object.values(await getAll('scene'));
+
+    const byBeat = {};
+    for (const sc of scenes) {
+      if (!sc.beatId) continue;
+      (byBeat[sc.beatId] ||= []).push(sc);
+    }
+
+    const build = (level, parentId) => sortByOrder(
+      beats.filter(b => b.level === level && (b.parentId || null) === (parentId || null))
+    ).map(b => {
+      const mine = byBeat[b.id] || [];
+      const children = level < 4 ? build(level + 1, b.id) : [];
+      return {
+        ...b,
+        children,
+        scenes: mine,
+        words: mine.reduce((n, s) => n + (s.wordCount || 0), 0) +
+               children.reduce((n, c) => n + c.words, 0),
+        sceneCount: mine.length + children.reduce((n, c) => n + c.sceneCount, 0),
+      };
+    });
+
+    return build(2, null);
+  }
+
+  // Scenes that serve no beat. Sometimes exactly right — the book
+  // found something the plan didn't — and sometimes drift worth
+  // noticing. Either way it should be visible rather than inferred.
+  async function unplannedScenes() {
+    const tree = await getTree();
+    const out = [];
+    for (const ch of allChapters(tree)) {
+      for (const sc of ch.scenes) {
+        const rec = await get('scene', sc.id);
+        if (rec && !rec.beatId) out.push({ ...sc, chapter: ch.title });
+      }
+    }
+    return out;
+  }
+
+  async function deleteBeat(id) {
+    // Children are detached, not destroyed, and scenes keep their text
+    // — the same rule as everywhere: only deleting a scene loses words.
+    for (const b of Object.values(await getAllIn('beat'))) {
+      if (b.parentId === id) await put('beat', b.id, { ...b, parentId: null });
+    }
+    for (const sc of Object.values(await getAll('scene'))) {
+      if (sc.beatId === id) await put('scene', sc.id, { ...sc, beatId: null });
+    }
+    return remove('beat', id);
+  }
+
   // ── Manuscript tree ───────────────────────────────────────────────
 
   async function createBook(title) {
