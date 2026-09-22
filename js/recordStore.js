@@ -432,34 +432,70 @@ const RecordStore = (() => {
    *
    * Returns the surviving id, or null if there was nothing to fix.
    */
+  /**
+   * reconcileAutoProjects() — restore two invariants after a sync.
+   *
+   * 1. ORPHANS. Every project-scoped record must point at a project
+   *    that exists. It is possible for it not to: one device merges
+   *    and deletes the spare projects, another device pushes records
+   *    still carrying the deleted ids, and those records end up
+   *    belonging to nothing — invisible in every view, and invisible
+   *    to a merge that only compares projects that exist. This is the
+   *    state that made a card fail to match its own name.
+   *
+   * 2. DUPLICATES. The migration ran per device, so each minted its
+   *    own project for the same content. `auto` marks those. Anything
+   *    migrated before that marker existed is matched by title
+   *    instead, and reported rather than merged — see
+   *    duplicateProjectGroups().
+   *
+   * Both run on every pull, because both are caused by what another
+   * device did.
+   */
   async function reconcileAutoProjects() {
     const all = Object.values(await getAll('project'));
-    if (all.length < 2) return null;
+    if (!all.length) return null;
 
-    // Two ways to recognise the duplicate.
-    //
-    // `auto` marks a project the migration created — reliable, but only
-    // for projects made after that flag existed. Everything migrated
-    // before it has no marker at all, which is why this never fired for
-    // the accounts that actually had the problem.
-    //
-    // So also group by title. ensureProject() names the project after
-    // the first book, so every device produced the same name for the
-    // same content. A deliberate duplicate name is possible, which is
-    // why a title-only match is REPORTED rather than merged silently —
-    // see needsMergePrompt().
+    const live = new Set(all.map(p => p.id));
+    let survivor = null;
+
+    // ── Duplicates first, so orphans are adopted by the survivor ──
     const groups = new Map();
     for (const p of all) {
       const key = (p.title || '').trim().toLowerCase();
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(p);
     }
-
-    let survivor = null;
     for (const group of groups.values()) {
       if (group.length < 2) continue;
-      if (!group.some(p => p.auto)) continue;      // prompt path handles these
+      if (!group.some(p => p.auto)) continue;   // prompt path handles these
       survivor = await mergeProjects(group);
+    }
+
+    // ── Orphans ──
+    // Home is the current project when it is still real, else the
+    // oldest — deterministic, so every device adopts them into the
+    // same place instead of pulling them back and forth.
+    const remaining = Object.values(await getAll('project'));
+    if (!remaining.length) return survivor;
+    const home = (_currentProject && remaining.some(p => p.id === _currentProject))
+      ? _currentProject
+      : [...remaining].sort((a, b) =>
+          (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id))[0].id;
+
+    const alive = new Set(remaining.map(p => p.id));
+    let adopted = 0;
+    for (const type of PROJECT_SCOPED) {
+      for (const rec of Object.values(await getAll(type))) {
+        if (rec.projectId && alive.has(rec.projectId)) continue;
+        await put(type, rec.id, { ...rec, projectId: home });
+        adopted++;
+      }
+    }
+
+    if (adopted) {
+      invalidateCards();
+      return survivor || home;
     }
     return survivor;
   }

@@ -6214,7 +6214,9 @@ async function afterPull() {
     App.data.lastProjectId = merged;
     saveLocal();
     await renderProjectName();
-    showToast('Projects from your devices have been merged.', 6000);
+    // Covers both repairs: a genuine merge, and records adopted back
+    // out of a project that no longer exists.
+    showToast('Cards and events from your other devices have been reconnected.', 6000);
   }
 
   invalidateCardIndex();
@@ -6287,10 +6289,13 @@ async function openLastProject() {
   delete App.data._legacyPlace;
   saveLocal();
 
+  // Records orphaned onto a deleted project are invisible everywhere
+  // and don't need a pull to be repaired — the damage is already local.
+  const repaired = await RecordStore.reconcileAutoProjects();
+  if (repaired) RecordStore.setCurrentProject(repaired);
+
   await renderProjectName();
   await railSection(place().section || 'manuscript');
 
-  // Don't wait for a pull to surface this: a device that is offline,
-  // or signed out, can still be holding the split.
   setTimeout(() => offerProjectMerge(), 1200);
 }
