@@ -560,7 +560,7 @@ svg:not(.tl-svg) {
   border: 1px solid var(--rule);
   border-radius: 4px;
   width: 100%;
-  max-width: 30rem;
+  max-width: 33rem;
   max-height: 88vh;
   display: flex;
   flex-direction: column;
@@ -582,7 +582,7 @@ svg:not(.tl-svg) {
   font-size: var(--t-lg);
   font-weight: 600;
 }
-.modal-body { padding: 1rem; overflow-y: auto; }
+.modal-body { padding: 1.25rem; overflow-y: auto; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -590,10 +590,10 @@ svg:not(.tl-svg) {
   margin-top: 1.25rem;
 }
 
-.set-block { margin-bottom: 1.75rem; }
+.set-block { margin-bottom: 2.25rem; }
 .set-block:last-child { margin-bottom: 0; }
 .set-block h3 {
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.875rem;
   font-family: var(--prose);
   font-size: var(--t-md);
   font-weight: 600;
@@ -604,27 +604,43 @@ svg:not(.tl-svg) {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.4375rem 0;
+  padding: 0.5rem 0;
   font-size: var(--t-sm);
 }
+/* Stacked rows are labelled fields; they need more room between them
+   than a checkbox line does. */
 .row.stack { flex-direction: column; align-items: stretch; gap: 0.3125rem; }
-.row.stack > span { color: var(--ink-soft); font-size: var(--t-xs); }
+.row.stack + .row.stack { margin-top: 0.5rem; }
+.row.stack > span { color: var(--ink-faint); font-size: var(--t-xs); }
 
-.row input[type="text"], .row input:not([type]) {
+/* Every text-ish input, not just type="text". The old selector missed
+   email, tel, url and number, which then rendered as raw browser
+   controls — white boxes in a dark modal. */
+.set-block input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.set-block textarea,
+.set-block select {
   font: inherit;
   font-size: var(--t-sm);
-  padding: 0.375rem 0.5rem;
+  padding: 0.4375rem 0.5rem;
   background: var(--paper);
   border: 1px solid var(--rule);
   border-radius: 3px;
   color: var(--ink);
   width: 100%;
 }
+.set-block input:focus, .set-block textarea:focus, .set-block select:focus {
+  outline: none;
+  border-color: var(--ink-faint);
+}
+.set-block input::placeholder, .set-block textarea::placeholder {
+  color: var(--ink-faint);
+}
 
 .note {
   font-size: var(--t-xs);
   color: var(--ink-soft);
-  margin: 0.375rem 0 0.75rem;
+  line-height: 1.55;
+  margin: 0.375rem 0 0.875rem;
 }
 
 /* ── Toast ─────────────────────────────────────────────────────── */
@@ -986,7 +1002,7 @@ html.typewriter .scene { padding-bottom: 0; }
 .auth-badge-token  { border-color: var(--rubric-dim); color: var(--rubric); }
 .auth-badge-google { border-color: var(--ink-faint); color: var(--ink); }
 
-.btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.875rem; }
 
 /* The token is a credential you have to read back accurately — monospace
    and selectable, not styled prose. */
@@ -1089,8 +1105,9 @@ html.typewriter .scene { padding-bottom: 0; }
 
 /* ── Author details ────────────────────────────────────────────── */
 
-.name-grid  { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.5rem; }
-.pair-grid  { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.5rem; }
+.name-grid  { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.75rem; }
+.pair-grid  { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.75rem; }
+.name-grid .row.stack, .pair-grid .row.stack { margin-top: 0; padding: 0; }
 
 .set-block textarea {
   font: inherit;
@@ -2507,13 +2524,14 @@ html.dark {
   font-family: var(--prose);
   font-size: var(--t-sm);
   color: var(--ink);
-  margin-top: 0.625rem;
+  margin-top: 0.875rem;
 }
+.opt-list dt:first-child { margin-top: 0; }
 .opt-list dd {
-  margin: 0.125rem 0 0;
+  margin: 0.1875rem 0 0;
   font-size: var(--t-xs);
   color: var(--ink-soft);
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .opt-list dd strong { color: var(--ink); font-weight: 400; }
 
@@ -2752,13 +2770,18 @@ html.dark {
 /* Whether your writing has left the device should be readable, not
    something you find out by getting home and seeing nothing. */
 
-.sync-status { margin: 0.5rem 0 0.875rem; }
+.sync-status {
+  margin: 0.75rem 0 1rem;
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.25rem 0.625rem;
+}
 .st-row {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
   font-size: var(--t-xs);
-  padding: 0.1875rem 0;
+  padding: 0.3125rem 0;
   border-bottom: 1px solid var(--rule-soft);
 }
 .st-row:last-child { border-bottom: 0; }
