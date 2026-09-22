@@ -1476,6 +1476,22 @@ function ensureEditor() {
     if (_acBox) positionAutocomplete(cm);
   });
 
+  // Hovering a link in the EDITOR. CodeMirror has no per-token hover
+  // event, so this reads the character under the pointer and asks
+  // whether it falls inside a link — the same check Ctrl-click uses.
+  let _hoverRaf = null;
+  cm.getWrapperElement().addEventListener('mousemove', e => {
+    if (_hoverRaf) return;
+    _hoverRaf = requestAnimationFrame(() => {
+      _hoverRaf = null;
+      const pos = cm.coordsChar({ left: e.clientX, top: e.clientY });
+      const target = linkAt(cm, pos);
+      target ? scheduleCardTip(target, e.clientX, e.clientY) : hideCardTip();
+    });
+  });
+  cm.getWrapperElement().addEventListener('mouseleave', hideCardTip);
+  cm.on('scroll', hideCardTip);
+
   cm.on('blur', () => {
     setTimeout(closeAutocomplete, 120);
     concealWikilinks(cm);      // nothing should stay expanded once you leave
@@ -4317,6 +4333,104 @@ function autocompleteKey(cm, e) {
   return false;
 }
 
+// ── Card preview on hover ──────────────────────────────────────────
+//
+// The point of a link is that you don't have to leave the sentence to
+// remember who someone is. Following it opens the card and loses your
+// place; a preview answers the small question — what's her rank, when
+// was she born, which faction — without moving.
+//
+// Deliberately partial: the first few filled fields, not the whole
+// card. A tooltip that shows everything is a card, and you already
+// have one of those a click away.
+
+let _cardTip = null, _cardTipFor = null, _cardTipTimer = null, _cardTipUrl = null;
+const CARD_TIP_DELAY = 350;   // long enough not to fire while reading
+
+function hideCardTip() {
+  clearTimeout(_cardTipTimer);
+  _cardTipFor = null;
+  if (_cardTipUrl) { URL.revokeObjectURL(_cardTipUrl); _cardTipUrl = null; }
+  if (_cardTip) _cardTip.hidden = true;
+}
+
+function scheduleCardTip(target, x, y) {
+  if (!target) return hideCardTip();
+  if (target === _cardTipFor && _cardTip && !_cardTip.hidden) {
+    return placeCardTip(x, y);
+  }
+  clearTimeout(_cardTipTimer);
+  _cardTipFor = target;
+  _cardTipTimer = setTimeout(() => showCardTip(target, x, y), CARD_TIP_DELAY);
+}
+
+async function showCardTip(target, x, y) {
+  const card = await RecordStore.resolveLink(target);
+  if (_cardTipFor !== target) return;        // pointer moved on while we waited
+
+  if (!_cardTip) {
+    _cardTip = el('div', 'card-tip');
+    document.body.append(_cardTip);
+  }
+  _cardTip.replaceChildren();
+
+  if (!card) {
+    _cardTip.append(el('div', 'ct-unknown', `No card called “${target}”.`));
+    _cardTip.append(el('div', 'ct-hint', 'Ctrl-click to create one.'));
+  } else {
+    _cardTip.style.setProperty('--k', `var(--c-${card.cardType || 'research'})`);
+
+    const head = el('div', 'ct-head');
+    head.append(el('span', 'ct-name', card.name || 'Untitled'));
+    head.append(el('span', 'ct-type', card.cardType || ''));
+    _cardTip.append(head);
+
+    // The name you wrote, when it isn't the card's own — so a callsign
+    // or a nickname is visibly the same person.
+    if ((card.name || '').toLowerCase() !== target.toLowerCase()) {
+      _cardTip.append(el('div', 'ct-alias', `written as “${target}”`));
+    }
+
+    const img = await RecordStore.getImage(card.id);
+    if (img) {
+      _cardTipUrl = URL.createObjectURL(img);
+      const el_ = el('img', 'ct-img');
+      el_.src = _cardTipUrl;
+      el_.alt = '';
+      _cardTip.append(el_);
+    }
+
+    const filled = Object.entries(card.fields || {}).filter(([, v]) => (v || '').trim());
+    for (const [k, v] of filled.slice(0, 4)) {
+      const r = el('div', 'ct-row');
+      r.append(el('span', 'ct-k', k));
+      r.append(el('span', 'ct-v', v));
+      _cardTip.append(r);
+    }
+    if (filled.length > 4) {
+      _cardTip.append(el('div', 'ct-hint', `+${filled.length - 4} more`));
+    }
+    if (!filled.length && (card.body || '').trim()) {
+      const n = el('div', 'ct-note', card.body.trim().slice(0, 180));
+      _cardTip.append(n);
+    }
+  }
+
+  _cardTip.hidden = false;
+  placeCardTip(x, y);
+}
+
+function placeCardTip(x, y) {
+  if (!_cardTip || _cardTip.hidden) return;
+  const pad = 14;
+  const w = _cardTip.offsetWidth, h = _cardTip.offsetHeight;
+  // Flip rather than overflow, same as the timeline tooltip.
+  const left = x + pad + w > window.innerWidth ? x - pad - w : x + pad;
+  const top  = y + pad + h > window.innerHeight ? y - pad - h : y + pad;
+  _cardTip.style.left = `${Math.max(8, left)}px`;
+  _cardTip.style.top  = `${Math.max(8, top)}px`;
+}
+
 // ── Following a link ───────────────────────────────────────────────
 
 // The [[target]] under a position, if any.
@@ -5875,6 +5989,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Rendered wikilinks in the read view and the mobile reading pane.
   // Plain click is fine here — this text isn't editable, so there's no
   // caret to place and nothing to steal.
+  $('sheet').addEventListener('mousemove', e => {
+    const link = e.target.closest?.('a.wl');
+    link ? scheduleCardTip(link.dataset.link, e.clientX, e.clientY) : hideCardTip();
+  });
+  $('sheet').addEventListener('mouseleave', hideCardTip);
+
   $('sheet').addEventListener('click', e => {
     const link = e.target.closest('a.wl');
     if (!link) return;
@@ -5883,6 +6003,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   $('sheet').addEventListener('scroll', () => {
+    hideCardTip();
     if (App.view !== 'read' || _spyRaf) return;
     _spyRaf = requestAnimationFrame(() => { _spyRaf = null; updateSpy(); });
   }, { passive: true });
