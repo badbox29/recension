@@ -357,6 +357,33 @@ async function openProjectMenu(anchor) {
   menu.append(add);
 
   if (list.length > 1) {
+    const merge = el('button', null, 'Merge projects…');
+    merge.addEventListener('click', async e => {
+      e.stopPropagation();
+      closeRowMenu();
+      const from = await askChoice('Merge which project into this one?',
+        list.filter(p => p.id !== cur).map(p => ({ label: p.title, value: p.id })));
+      if (!from) return;
+      const target = list.find(p => p.id === cur);
+      const source = list.find(p => p.id === from);
+      showConfirm(
+        `Move everything from “${source.title}” into “${target.title}”? ` +
+        `Nothing is deleted — its books, cards and events all move across.`,
+        async () => {
+          // mergeProjects keeps the OLDEST, so force the survivor to be
+          // the one you're standing in by making it look older.
+          const keep = { ...target, createdAt: Math.min(target.createdAt || 0, (source.createdAt || 0) - 1) };
+          await RecordStore.put('project', target.id, keep);
+          await RecordStore.mergeProjects([keep, source]);
+          RecordStore.setCurrentProject(target.id);
+          invalidateCardIndex();
+          await renderProjectName();
+          await railSection(App.section || 'manuscript');
+          showToast('Projects merged.');
+        }, 'Merge');
+    });
+    menu.append(merge);
+
     const del = el('button', 'danger', 'Delete this project…');
     del.addEventListener('click', e => {
       e.stopPropagation();
@@ -1768,6 +1795,7 @@ function openSettings() {
   $('account-actions').style.display = Auth.isGuest() ? 'none' : '';
   loadAuthorFields();
   renderStorageStatus();
+  renderSyncStatus();
   showSettingsTab(_settingsTab);
   openModal('modal-settings');
 }
@@ -1786,6 +1814,61 @@ async function refreshGoogleClientId() {
       Auth.setGoogleClientId(googleClientId);
     }
   } catch { /* offline — the boot fetch will pick it up next time */ }
+}
+
+/**
+ * renderSyncStatus() — what sync is actually doing, on screen.
+ *
+ * Twice now a sync problem has been invisible from inside the app and
+ * only findable in a browser console — which is not available on a
+ * phone at all. A person should be able to tell whether their writing
+ * has left the device by looking.
+ */
+async function renderSyncStatus() {
+  const box = $('sync-status');
+  if (!box) return;
+  box.replaceChildren();
+
+  const line = (k, v, bad = false) => {
+    const r = el('div', 'st-row');
+    r.append(el('span', 'st-k', k));
+    const val = el('span', 'st-v' + (bad ? ' bad' : ''), v);
+    r.append(val);
+    box.append(r);
+  };
+
+  const guest = Auth.isGuest();
+  line('Account', guest ? 'Guest — nothing leaves this device'
+                        : (App.data.authMethod === 'google' ? 'Google' : 'Token'),
+       guest);
+
+  if (guest) return;
+
+  line('Worker', App.data.workerUrl || 'not set', !App.data.workerUrl);
+
+  const last = await Sync.lastSyncTime();
+  line('Last synced', last ? new Date(last).toLocaleString() : 'never', !last);
+
+  const pending = await Sync.pendingCount();
+  // Pending is the number that matters: it is how much of today's
+  // writing exists only here.
+  line('Waiting to upload', pending ? `${pending} change${pending === 1 ? '' : 's'}` : 'nothing',
+       pending > 20);
+
+  if (!App.data.workerUrl) return;
+
+  line('Reachable', 'checking…');
+  try {
+    const res = await fetch(`${App.data.workerUrl}/ping`, { cache: 'no-store' });
+    const ok = res.ok && (await res.json().catch(() => null))?.ok;
+    box.lastChild.lastChild.textContent = ok ? 'yes' : `answered ${res.status}`;
+    box.lastChild.lastChild.classList.toggle('bad', !ok);
+  } catch {
+    // The common cause on a managed machine: *.workers.dev blocked by
+    // web filtering. Everything saves locally and nothing ever leaves.
+    box.lastChild.lastChild.textContent = 'no — blocked, offline, or wrong address';
+    box.lastChild.lastChild.classList.add('bad');
+  }
 }
 
 /**
@@ -5942,6 +6025,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('set-worker').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveWorkerUrl(); }
   });
+  $('btn-sync-status-refresh').addEventListener('click', renderSyncStatus);
   $('btn-sync-now').addEventListener('click', async () => {
     // Report the actual blocker. "Sync incomplete" for a guest account is
     // true but useless — there's nothing to sync TO yet.
@@ -5954,9 +6038,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await afterPull();
     if (pushed.ok && pulled.ok) showToast('Synced.');
     else showToast('Sync incomplete — it will retry on its own.');
-    Sync.lastSyncTime().then(t => {
-      $('sync-note').textContent = t ? `Last synced ${new Date(t).toLocaleString()}.` : 'Not synced yet.';
-    });
+    renderSyncStatus();
   });
 
   // Account controls. auth.js owns the wizards; these just open them.
@@ -6126,6 +6208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
  */
 async function afterPull() {
   const merged = await RecordStore.reconcileAutoProjects();
+  if (!merged) await offerProjectMerge();
   if (merged) {
     RecordStore.setCurrentProject(merged);
     App.data.lastProjectId = merged;
@@ -6139,6 +6222,46 @@ async function afterPull() {
   await renderTree();
   if (App.section === 'cards') renderCards();
   if (App.section === 'events') renderEvents();
+}
+
+/**
+ * offerProjectMerge() — ask about duplicates the app can't merge alone.
+ *
+ * The automatic merge only runs on projects the migration marked. An
+ * account migrated before that marker existed has two identically
+ * named projects and no proof they were automatic — and merging two
+ * projects somebody made deliberately would be worse than leaving the
+ * split. So this asks, once per session, naming what it found.
+ *
+ * The split is not cosmetic: a book in one project and its cards in
+ * the other means every link between them reads as unresolved, and
+ * records appear and disappear as each device's copy wins.
+ */
+let _mergeOffered = false;
+async function offerProjectMerge() {
+  if (_mergeOffered) return;
+  const groups = await RecordStore.duplicateProjectGroups();
+  if (!groups.length) return;
+  _mergeOffered = true;
+
+  const group = groups[0];
+  const name = group[0].title || 'this project';
+  const pick = await askChoice(
+    `There are ${group.length} projects called “${name}”, most likely because ` +
+    `Recension was set up on more than one device before projects existed. ` +
+    `While they stay separate, cards and events can sit in one while the ` +
+    `manuscript sits in the other — which is why some links show as unknown.`,
+    [{ label: 'Merge them into one', value: 'merge' }]);
+  if (pick !== 'merge') return;
+
+  const keep = await RecordStore.mergeProjects(group);
+  RecordStore.setCurrentProject(keep);
+  App.data.lastProjectId = keep;
+  saveLocal();
+  await renderProjectName();
+  invalidateCardIndex();
+  await railSection(App.section || 'manuscript');
+  showToast('Projects merged.', 5000);
 }
 
 async function openLastProject() {
@@ -6166,4 +6289,8 @@ async function openLastProject() {
 
   await renderProjectName();
   await railSection(place().section || 'manuscript');
+
+  // Don't wait for a pull to surface this: a device that is offline,
+  // or signed out, can still be holding the split.
+  setTimeout(() => offerProjectMerge(), 1200);
 }
