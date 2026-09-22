@@ -2747,3 +2747,27 @@ html.dark {
 /* contenteditable input needs the same caret and selection treatment
    the textarea mode had, or the switch shows. */
 .prose .CodeMirror [contenteditable="true"] { outline: none; caret-color: var(--ink); }
+
+/* ── Sync status ───────────────────────────────────────────────── */
+/* Whether your writing has left the device should be readable, not
+   something you find out by getting home and seeing nothing. */
+
+.sync-status { margin: 0.5rem 0 0.875rem; }
+.st-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: var(--t-xs);
+  padding: 0.1875rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.st-row:last-child { border-bottom: 0; }
+.st-k { color: var(--ink-faint); flex: none; }
+.st-v {
+  color: var(--ink);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-v.bad { color: var(--rubric); }
