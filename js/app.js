@@ -2596,32 +2596,99 @@ async function exportBackup({ projectId = null } = {}) {
 
 const SNOWFLAKE_STEPS = [
   { n: 1,  key: 'sentence',  title: 'Story in a sentence',
-    blurb: 'One or two sentences. Swain\u2019s five parts, if they help.' },
+    blurb: 'One or two sentences. The whole book, at arm\u2019s length.',
+    guide: [
+      'Aim for about fifteen words. Shorter is harder and better.',
+      'No character names \u2014 say "a field agent", not "Eddie". Names mean nothing to someone who hasn\u2019t read it, and they let you hide behind the familiar.',
+      'Say what the book is ABOUT, not what happens first. This is the sentence you would use to sell it, and the one to come back to when a scene starts drifting.',
+      'It will change. Write it badly now and fix it after step 4 \u2014 that is the method working, not you failing.',
+    ] },
   { n: 2,  key: 'paragraph', title: 'Story in a paragraph',
-    blurb: 'Five sentences: the setup, three disasters, and the ending.' },
+    blurb: 'Five sentences: the setup, three disasters, and the ending.',
+    guide: [
+      'Sentence one sets the situation. The last one ends the book \u2014 write the ending now, even if you are not sure of it.',
+      'Three disasters in between, each worse than the last. A disaster is not a setback: it forces the character to act, and there is no going back to how things were.',
+      'Disasters one and two should be caused by something outside the character. The third should be their own doing \u2014 that is what makes an ending feel earned rather than arranged.',
+      'Each of these five sentences becomes a paragraph in step 4, so keep them separable. One idea each.',
+    ] },
   { n: 3,  key: 'sheets',    title: 'Character sheets',
-    blurb: 'A sheet for each important character. Creates cards.' },
+    blurb: 'A sheet for each character who matters. Creates cards.',
+    guide: [
+      'Only the characters who drive something. A sheet for the barman is procrastination.',
+      'The storyline sentence is their version of step 1 \u2014 the book as it looks from inside their head.',
+      'Motivation is what they want in the abstract (respect, safety). Goal is the concrete thing they are chasing this book.',
+      'Conflict is what stops them getting it. Epiphany is what they learn \u2014 and if a character has none, that is worth noticing now rather than at 60,000 words.',
+    ] },
   { n: 4,  key: 'expand2',   title: 'Paragraphs from sentences',
-    blurb: 'Each sentence of step 2 becomes its own paragraph.' },
+    blurb: 'Each sentence of step 2 becomes its own paragraph.',
+    guide: [
+      'Five paragraphs, each ending in the disaster that its sentence named \u2014 except the last, which ends the book.',
+      'This is where holes show. If a paragraph will not expand, the sentence above it was hiding something.',
+      'Go back and fix step 2 when that happens. The steps loop; they are not a queue.',
+      'About one page in total. If you are writing four, you are drafting, not planning.',
+    ] },
   { n: 5,  key: 'synopsis',  title: 'Character synopsis',
-    blurb: 'The story from each character\u2019s point of view.' },
+    blurb: 'The story from each character\u2019s point of view.',
+    guide: [
+      'A page each for the main characters, half a page for the rest.',
+      'Tell it as THEY would \u2014 what they think is happening, which is rarely what is happening.',
+      'This is the step that turns a plot into people. It also tends to break your outline, which is the point of doing it before you draft.',
+    ] },
   { n: 6,  key: 'expand4',   title: 'Pages from paragraphs',
-    blurb: 'Each paragraph of step 4 becomes a full page.' },
+    blurb: 'Each paragraph of step 4 becomes a full page.',
+    guide: [
+      'Four or five pages in total. The last stop before you are working in scenes.',
+      'Keep it as narrative summary, not prose. You are still deciding what happens, not how it reads.',
+      'By the end of this you should know roughly how long the book is and where its middle sags.',
+    ] },
   { n: 7,  key: 'charts',    title: 'Character charts',
-    blurb: 'Everything else you know about each character.' },
+    blurb: 'Everything else you know about each character.',
+    guide: [
+      'Birthdate, history, how they speak, what they are ashamed of. Detail you will not use, so that the detail you do use is true.',
+      'Optional, and many writers skip it. Do it if characters keep coming out interchangeable.',
+    ] },
   { n: 8,  key: 'scenes',    title: 'Scene map',
-    blurb: 'Every scene, with its point of view. Creates scenes.' },
+    blurb: 'Every scene, with its point of view. Creates scenes.',
+    guide: [
+      'One line per scene: whose head we are in, and what happens.',
+      'Every scene needs a point-of-view character and a change. If nothing changes, it is not a scene.',
+      'Expect roughly a hundred scenes in a novel. Seeing them listed is the first honest look at the size of the job.',
+      'Scenes you make here are real scenes in the manuscript. Give one a chapter or it waits in Unplaced.',
+    ] },
   { n: 9,  key: 'narrative', title: 'Narrative description',
-    blurb: 'A short summary of each scene \u2014 a mini first draft.' },
+    blurb: 'A short summary of each scene \u2014 a mini first draft.',
+    guide: [
+      'A paragraph or so per scene, in the order they will be read.',
+      'Write it fast and badly. Its job is to find the scenes that do not work while they are still cheap to cut.',
+      'Ingermanson reckons this stage catches most of the problems that would otherwise surface in a second draft.',
+    ] },
   { n: 10, key: 'draft',     title: 'Write the first draft',
-    blurb: 'The part no method can do for you.' },
+    blurb: 'The part no method can do for you.',
+    guide: [
+      'You have a scene list and a summary of each. Now it is just the writing.',
+      'The plan is not a contract. When the book wants to go somewhere else, let it, and come back and fix the plan afterwards \u2014 or do not.',
+    ] },
 ];
 
 // Steps 1, 2 and 8 are the spine. The rest can be switched off, and
 // several writers use none of them.
 const SNOWFLAKE_CORE = ['sentence', 'paragraph', 'scenes', 'draft'];
 
-const SWAIN_FIELDS = ['Situation', 'Character', 'Objective', 'Opponent', 'Disaster'];
+// Dwight Swain's formula for a one-sentence story, which Ingermanson
+// borrows for step 1. Each one is a question, not a label — a bare
+// word like "Opponent" tells you nothing about what belongs in it.
+const SWAIN_FIELDS = [
+  ['Situation', 'The state of things when the book opens. The trouble that already exists.',
+   'A cartel war has left the Sonoran border ungoverned'],
+  ['Character', 'Who we follow — by role, not name.',
+   'a burned-out field agent'],
+  ['Objective', 'What they are trying to get or do. Concrete enough to fail at.',
+   'wants to find out how his father really died'],
+  ['Opponent', 'Who or what stands in the way. Often not a villain.',
+   'the agency that employed them both'],
+  ['Disaster', 'What it costs if they fail — or what going after it costs anyway.',
+   'and the truth will end the only family he has left'],
+];
 
 // ── Sentence splitting ─────────────────────────────────────────────
 //
@@ -2680,6 +2747,21 @@ function splitSentences(text) {
 
 // Which step is open, and whether the guided walkthrough is running.
 const snow = { step: 1, guided: false };
+
+// Collapsing a step's guidance is remembered, per device: it is
+// essential the first time and noise the tenth.
+const GUIDE_SEEN_KEY = 'rec_guide_seen';
+function readGuideSeen(key) {
+  try { return (JSON.parse(localStorage.getItem(GUIDE_SEEN_KEY)) || {})[key]; }
+  catch { return false; }
+}
+function markGuideSeen(key, seen) {
+  try {
+    const all = JSON.parse(localStorage.getItem(GUIDE_SEEN_KEY)) || {};
+    all[key] = seen;
+    localStorage.setItem(GUIDE_SEEN_KEY, JSON.stringify(all));
+  } catch {}
+}
 
 async function snowConfig() {
   const list = await RecordStore.listProjects();
@@ -2832,6 +2914,23 @@ async function renderSnowflake() {
   head.append(el('span', 'sf-n', `Step ${step.n}`));
   head.append(el('h1', null, step.title));
   head.append(el('p', 'sf-blurb', step.blurb));
+
+  // The method, not just the field. A step-by-step system that only
+  // labels its steps is scaffolding with the instructions left out —
+  // and Snowflake's value is almost entirely in the reasoning behind
+  // each step, not in having somewhere to type.
+  if (step.guide?.length) {
+    const det = el('details', 'sf-guide');
+    // Open by default the first time you land on a step; once you know
+    // the method it is noise, so the choice is remembered per step.
+    det.open = !readGuideSeen(step.key);
+    det.addEventListener('toggle', () => markGuideSeen(step.key, !det.open));
+    det.append(el('summary', null, 'How this step works'));
+    const ul = el('ul');
+    for (const point of step.guide) ul.append(el('li', null, point));
+    det.append(ul);
+    head.append(det);
+  }
   host.append(head);
 
   const body = el('div', 'sf-body');
@@ -2856,9 +2955,13 @@ async function renderSnowflake() {
   host.append(nav);
 }
 
-function sfField(parent, label, value, onChange, { rows = 2, placeholder = '' } = {}) {
+function sfField(parent, label, value, onChange, { rows = 2, placeholder = '', hint = '' } = {}) {
   const wrap = el('label', 'sf-field');
-  wrap.append(el('span', null, label));
+  if (label) wrap.append(el('span', null, label));
+  // The hint sits under the label, not in the placeholder — a
+  // placeholder vanishes the moment you start typing, which is exactly
+  // when you might still want to know what the field is asking for.
+  if (hint) wrap.append(el('span', 'sf-hint', hint));
   const ta = el('textarea');
   ta.rows = rows;
   ta.value = value || '';
@@ -2881,15 +2984,25 @@ const STEP_VIEW = {
       { rows: 3, placeholder: 'A disgraced operator returns to the desert that broke her.' });
 
     box.append(el('p', 'note',
-      'Swain\u2019s five parts, if they help you find it. They are a way in, not a form to complete.'));
+      'Dwight Swain\u2019s five parts, which Ingermanson borrows to find that ' +
+      'sentence. Answer them and the sentence usually assembles itself. They ' +
+      'are a way in, not a form to complete \u2014 skip any that fight you.'));
+
     const grid = el('div', 'sf-swain');
-    for (const f of SWAIN_FIELDS) {
-      sfField(grid, f, cfg.swain?.[f], async v => {
+    for (const [name, hint, example] of SWAIN_FIELDS) {
+      sfField(grid, name, cfg.swain?.[name], async v => {
         const c = await snowConfig();
-        saveSnowConfig({ swain: { ...(c.swain || {}), [f]: v } });
-      }, { rows: 1 });
+        saveSnowConfig({ swain: { ...(c.swain || {}), [name]: v } });
+      }, { rows: 1, hint, placeholder: example });
     }
     box.append(grid);
+
+    box.append(el('p', 'note sf-example',
+      'Strung together those read: \u201Ca cartel war has left the Sonoran border ' +
+      'ungoverned, and a burned-out field agent wants to find out how his father ' +
+      'really died \u2014 but the agency that employed them both stands in the way, ' +
+      'and the truth will end the only family he has left.\u201D That is longer than ' +
+      'step 1 wants. Cut it down until it hurts.'));
   },
 
   // ── 2 · Paragraph, written as prose and stored as sentences ──
