@@ -2873,3 +2873,66 @@ html.dark {
 /* No hover to speak of on touch, and a tooltip you can't dismiss is
    worse than none. */
 @media (hover: none) { .card-tip { display: none !important; } }
+
+/* ── Step guidance ─────────────────────────────────────────────────
+   A step-by-step method that only labels its steps is scaffolding
+   with the instructions left out. Open by default the first time you
+   land on a step, collapsed once you've dismissed it. */
+
+.sf-guide {
+  margin-top: 1rem;
+  border-left: 2px solid var(--rubric-dim);
+  padding-left: 0.875rem;
+}
+.sf-guide summary {
+  font-size: var(--t-xs);
+  color: var(--rubric);
+  cursor: pointer;
+  list-style: none;
+  padding: 0.125rem 0;
+}
+.sf-guide summary::-webkit-details-marker { display: none; }
+.sf-guide summary::before { content: "▾ "; }
+.sf-guide:not([open]) summary::before { content: "▸ "; }
+.sf-guide summary:hover { color: var(--ink); }
+
+.sf-guide ul {
+  margin: 0.4375rem 0 0.25rem;
+  padding-left: 1rem;
+  list-style: none;
+}
+.sf-guide li {
+  position: relative;
+  font-size: var(--t-sm);
+  color: var(--ink-soft);
+  line-height: 1.6;
+  margin-bottom: 0.5rem;
+}
+/* An en dash rather than a bullet — this is advice being given, not a
+   checklist to work through. */
+.sf-guide li::before {
+  content: "–";
+  position: absolute;
+  left: -1rem;
+  color: var(--ink-faint);
+}
+
+/* Field hint, under the label. Not a placeholder: a placeholder
+   disappears when you start typing, which is when you may still need
+   to know what the field is asking. */
+.sf-hint {
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  line-height: 1.45;
+  margin-bottom: 0.1875rem;
+}
+.sf-field > span:first-child { color: var(--ink-soft); }
+
+.sf-example {
+  border-top: 1px solid var(--rule-soft);
+  padding-top: 0.75rem;
+  font-style: italic;
+}
+
+/* Swain's five read as a column of questions on a narrow rail. */
+.sf-swain { gap: 1.25rem 1.5rem; }
