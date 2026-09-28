@@ -86,9 +86,18 @@ const Sync = (() => {
   const MAX_BACKOFF     = 5 * 60_000;
   const TOMBSTONE_TTL   = 90 * 24 * 60 * 60 * 1000; // 90 days
 
-  // Record types that participate in per-record sync. The account record is
-  // handled separately (it has optimistic concurrency via _rev).
-  const TYPES = ['book', 'chapter', 'scene', 'card', 'event'];
+  // Record types that participate in per-record sync. The account record
+  // is handled separately (it has optimistic concurrency via _rev).
+  //
+  // TAKEN FROM THE STORE, never written out again here. This list was
+  // duplicated once, and when `part`, `project` and `beat` were added
+  // to the store nobody updated the copy — so flush() skipped those
+  // records AND left them in the dirty set, where they piled up
+  // permanently. Project records in particular never reached any other
+  // device, which is what let each device believe it had its own.
+  const TYPES = (typeof RecordStore !== 'undefined' && RecordStore.TYPES)
+    ? RecordStore.TYPES
+    : ['book', 'chapter', 'scene', 'card', 'event'];
   const ACCOUNT_KEY = '_account';
   const TOMB_KEY    = '_tombstones';
 
@@ -339,7 +348,14 @@ const Sync = (() => {
         if (key === '_tomb:set')   { pushTombs = true;   continue; }
 
         const [type, id] = splitKey(key);
-        if (!TYPES.includes(type)) continue;
+        if (!TYPES.includes(type)) {
+          // Nothing can push this, so leaving it dirty means it sits
+          // there for ever and the pending count never reaches zero.
+          // Drop it and say so rather than quietly accumulating.
+          console.warn('[Sync] dropping dirty key of unknown type:', key);
+          confirmedUnknown.push(key);
+          continue;
+        }
 
         const rec = await C.getRecord(type, id);
         if (!rec) { deletes.push(key); continue; }
@@ -347,6 +363,7 @@ const Sync = (() => {
       }
 
       const confirmed = [];
+      const confirmedUnknown = [];
       let failedAny = false;
 
       // Writes, in batches of BULK_WRITE_MAX.
@@ -390,7 +407,7 @@ const Sync = (() => {
         if (ok) confirmed.push(ACCOUNT_KEY); else failedAny = true;
       }
 
-      await clearDirty(confirmed);
+      await clearDirty([...confirmed, ...confirmedUnknown]);
       await metaSet('lastSync', Date.now());
 
       if (failedAny) {
@@ -493,7 +510,7 @@ const Sync = (() => {
       if (key.startsWith('_')) continue;
       if (tombs[key]) continue;
       const [type] = splitKey(key);
-      if (!TYPES.includes(type)) continue;
+      if (!TYPES.includes(type)) continue;   // see the TYPES note above
       // Absent locally → always fetch, whatever the metadata says.
       // Relying on `serverAt > localAt` alone meant a record with missing
       // or empty metadata compared 0 > 0, was judged up to date, and was
@@ -736,6 +753,7 @@ const Sync = (() => {
     deleteRecord,
 
     // Sync operations
+    knownTypes: () => TYPES,
     flush,
     pushAccount: pushAccountRecord,
     pull,

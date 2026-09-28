@@ -6058,6 +6058,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ── Events ──────────────────────────────────────────────────────
+  // sync.js takes its type list from the store now, but a mismatch
+  // here would silently strand records — and did, for weeks. Assert it
+  // rather than trust it.
+  if (typeof Sync.knownTypes === 'function') {
+    const missing = RecordStore.TYPES.filter(t => !Sync.knownTypes().includes(t));
+    if (missing.length) console.error('[Recension] sync cannot handle types:', missing);
+  }
+
   registerServiceWorker();
   loadTypography();
   syncTypePopover();
