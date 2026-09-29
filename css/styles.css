@@ -2936,3 +2936,77 @@ html.dark {
 
 /* Swain's five read as a column of questions on a narrow rail. */
 .sf-swain { gap: 1.25rem 1.5rem; }
+
+/* ══ Character palette ═════════════════════════════════════════════
+   Ctrl+/ rather than a permanent toolbar of accents, which would be
+   dead weight in every session that doesn't need one. */
+
+.char-palette {
+  position: fixed;
+  left: 50%;
+  top: 14vh;
+  transform: translateX(-50%);
+  z-index: 96;
+  width: min(30rem, calc(100vw - 2rem));
+  background: var(--vellum);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--ink) 34%, transparent);
+  padding: 0.625rem;
+}
+
+.char-search {
+  font: inherit;
+  font-size: var(--t-sm);
+  width: 100%;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.4375rem 0.5rem;
+}
+.char-search:focus { outline: none; border-color: var(--ink-faint); }
+
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  margin: 0.5rem 0 0.375rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.char-cell {
+  font-family: var(--prose);
+  font-size: 1.125rem;
+  line-height: 1;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0.4375rem 0;
+  cursor: pointer;
+}
+.char-cell:hover { background: var(--rule-soft); }
+.char-cell.on { background: var(--ink); color: var(--vellum); }
+
+.char-hint, .char-none {
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  margin: 0;
+  padding: 0.125rem 0.125rem 0;
+}
+.char-none { grid-column: 1 / -1; padding: 0.75rem; text-align: center; }
+
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0 0.25rem;
+}
+
+@media (max-width: 30rem) {
+  .char-grid { grid-template-columns: repeat(6, 1fr); }
+}
