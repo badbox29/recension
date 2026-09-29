@@ -165,6 +165,9 @@ const TYPE_DEFAULTS = {
   // Per device, like the rest of this object — the spelling dictionary
   // lives in the browser, and autocorrect is a keyboard behaviour.
   spellcheck: true, autocorrect: true,
+  // Off by default: everywhere else this app refuses to rewrite what
+  // you typed, and this is the one place that does.
+  smartTyping: false,
 };
 
 function loadTypography() {
@@ -1456,6 +1459,7 @@ function ensureEditor() {
   // caret is the other gesture: insert a link here, using the card's
   // own name.
   cm.on('beforeChange', (_cm, change) => {
+    applySmartTyping(_cm, change);
     if (change.origin !== '+input' || change.text.join('') !== '[') return;
     if (!_cm.somethingSelected()) return;
     const sel = _cm.getSelection();
@@ -1793,6 +1797,7 @@ function bindSettingsTabs() {
 function openSettings() {
   $('set-dark').checked = document.documentElement.classList.contains('dark');
   $('set-typewriter').checked = !!App.data.typewriter;
+  $('set-smart').checked = App.typography?.smartTyping === true;
   $('set-spellcheck').checked = App.typography?.spellcheck !== false;
   $('set-autocorrect').checked = App.typography?.autocorrect !== false;
   $('set-worker').value = App.data.workerUrl || '';
@@ -5803,6 +5808,263 @@ function offerUpdate() {
   document.body.append(bar);
 }
 
+// ══ Special characters ═════════════════════════════════════════════
+//
+// Two different needs, solved two different ways.
+//
+// The marks you type constantly — em dash, ellipsis, curly quotes —
+// shouldn't need a picker. Those are substituted as you type, opt-in
+// and off by default, because rewriting what someone typed is
+// something this app otherwise refuses to do.
+//
+// The ones you need occasionally — accents, a dagger, a degree sign —
+// get a palette on Ctrl-/ rather than a permanent toolbar, which would
+// be dead weight in every session that doesn't need it.
+//
+// The set below is general-purpose on purpose: Western European
+// accents, typographic marks, and the handful of symbols prose
+// actually uses. Searching by name is what makes it work for any
+// language rather than the one this was written beside.
+
+const SPECIAL_CHARS = [
+  // Typographic marks
+  ['—', 'em dash', 'dash punctuation'],
+  ['–', 'en dash', 'dash range punctuation'],
+  ['…', 'ellipsis', 'dots points punctuation'],
+  ['“', 'left double quote', 'quote quotation curly open'],
+  ['”', 'right double quote', 'quote quotation curly close'],
+  ['‘', 'left single quote', 'quote curly open'],
+  ['’', 'right single quote apostrophe', 'quote curly close'],
+  ['«', 'left guillemet', 'quote french angle'],
+  ['»', 'right guillemet', 'quote french angle'],
+  ['†', 'dagger', 'obelisk footnote'],
+  ['‡', 'double dagger', 'footnote'],
+  ['§', 'section sign', 'paragraph legal'],
+  ['¶', 'pilcrow', 'paragraph mark'],
+  ['·', 'middle dot', 'interpunct separator'],
+  ['№', 'numero', 'number sign'],
+
+  // Symbols prose actually uses
+  ['°', 'degree', 'temperature angle'],
+  ['½', 'one half', 'fraction'],
+  ['¼', 'one quarter', 'fraction'],
+  ['¾', 'three quarters', 'fraction'],
+  ['×', 'multiplication sign', 'times by dimensions'],
+  ['÷', 'division sign', 'divide'],
+  ['±', 'plus minus', 'tolerance'],
+  ['€', 'euro', 'currency money'],
+  ['£', 'pound sterling', 'currency money'],
+  ['¥', 'yen', 'currency money'],
+  ['¢', 'cent', 'currency money'],
+  ['©', 'copyright', 'legal'],
+  ['®', 'registered', 'trademark legal'],
+  ['™', 'trademark', 'legal'],
+  ['•', 'bullet', 'list dot'],
+  ['★', 'star', 'rating'],
+  ['♦', 'diamond', 'suit card'],
+
+  // Latin letters with diacritics — the everyday set
+  ['á', 'a acute', 'accent spanish'], ['à', 'a grave', 'accent french'],
+  ['â', 'a circumflex', 'accent french'], ['ä', 'a umlaut', 'diaeresis german'],
+  ['ã', 'a tilde', 'accent portuguese'], ['å', 'a ring', 'accent nordic'],
+  ['æ', 'ae ligature', 'accent nordic'],
+  ['é', 'e acute', 'accent french spanish'], ['è', 'e grave', 'accent french'],
+  ['ê', 'e circumflex', 'accent french'], ['ë', 'e umlaut', 'diaeresis'],
+  ['í', 'i acute', 'accent spanish'], ['ì', 'i grave', 'accent italian'],
+  ['î', 'i circumflex', 'accent french'], ['ï', 'i umlaut', 'diaeresis'],
+  ['ó', 'o acute', 'accent spanish'], ['ò', 'o grave', 'accent italian'],
+  ['ô', 'o circumflex', 'accent french'], ['ö', 'o umlaut', 'diaeresis german'],
+  ['õ', 'o tilde', 'accent portuguese'], ['ø', 'o slash', 'accent nordic'],
+  ['œ', 'oe ligature', 'accent french'],
+  ['ú', 'u acute', 'accent spanish'], ['ù', 'u grave', 'accent french'],
+  ['û', 'u circumflex', 'accent french'], ['ü', 'u umlaut', 'diaeresis german'],
+  ['ñ', 'n tilde', 'accent spanish'], ['ç', 'c cedilla', 'accent french portuguese'],
+  ['ß', 'sharp s eszett', 'german'],
+  ['ý', 'y acute', 'accent'], ['ÿ', 'y umlaut', 'diaeresis'],
+  ['š', 's caron', 'accent czech'], ['ž', 'z caron', 'accent czech'],
+  ['ł', 'l stroke', 'polish'], ['đ', 'd stroke', 'croatian'],
+  ['å', 'a ring', 'nordic'], ['þ', 'thorn', 'icelandic'], ['ð', 'eth', 'icelandic'],
+  ['¡', 'inverted exclamation', 'spanish'], ['¿', 'inverted question', 'spanish'],
+];
+
+const CHAR_RECENTS_KEY = 'rec_char_recents';
+
+function charRecents() {
+  try { return JSON.parse(localStorage.getItem(CHAR_RECENTS_KEY)) || []; }
+  catch { return []; }
+}
+
+function rememberChar(ch) {
+  // In practice a writer uses three or four of these over and over.
+  // Putting them first turns a search into a single keystroke.
+  const list = [ch, ...charRecents().filter(c => c !== ch)].slice(0, 12);
+  try { localStorage.setItem(CHAR_RECENTS_KEY, JSON.stringify(list)); } catch {}
+}
+
+let _charBox = null, _charItems = [], _charIndex = 0, _charTarget = null;
+
+function closeCharPalette() {
+  _charBox?.remove();
+  _charBox = null;
+  _charItems = [];
+  _charTarget = null;
+}
+
+/**
+ * openCharPalette() — insert a character wherever the caret is.
+ *
+ * Works in the editor AND in any plain field: a character name with an
+ * accent belongs on the card as much as in the prose, so restricting
+ * this to the manuscript would be the wrong half.
+ */
+function openCharPalette() {
+  closeCharPalette();
+
+  const active = document.activeElement;
+  const inField = active && /^(INPUT|TEXTAREA)$/.test(active.tagName);
+  const cm = App.editor?.codemirror;
+  const inEditor = !inField && cm && cm.hasFocus();
+  if (!inField && !inEditor) return;
+  _charTarget = inField ? active : cm;
+
+  _charBox = el('div', 'char-palette');
+
+  const field = el('input', 'char-search');
+  field.placeholder = 'Search — “acute”, “dash”, or just “n”';
+  field.setAttribute('aria-label', 'Search characters');
+  _charBox.append(field);
+
+  const grid = el('div', 'char-grid');
+  _charBox.append(grid);
+
+  const hint = el('div', 'char-hint', 'Enter to insert · Esc to close');
+  _charBox.append(hint);
+
+  const paint = q => {
+    const query = q.trim().toLowerCase();
+    if (!query) {
+      const recents = charRecents();
+      _charItems = [
+        ...recents.map(c => SPECIAL_CHARS.find(x => x[0] === c)).filter(Boolean),
+        ...SPECIAL_CHARS.filter(x => !recents.includes(x[0])),
+      ];
+    } else {
+      // Match the character itself, its name, or its keywords — so "n"
+      // finds ñ, "acute" finds every acute, "spanish" finds the set.
+      _charItems = SPECIAL_CHARS.filter(([ch, name, keys]) =>
+        ch === query || name.includes(query) || keys.includes(query) ||
+        name.split(' ').some(w => w.startsWith(query)));
+    }
+    _charIndex = 0;
+    drawChars(grid);
+  };
+
+  field.addEventListener('input', () => paint(field.value));
+  field.addEventListener('keydown', e => {
+    const cols = 8;
+    const move = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
+    if (move) {
+      e.preventDefault();
+      _charIndex = Math.max(0, Math.min(_charItems.length - 1, _charIndex + move));
+      drawChars(grid);
+      return;
+    }
+    if (e.key === 'Enter')  { e.preventDefault(); insertChar(_charItems[_charIndex]?.[0]); }
+    if (e.key === 'Escape') { e.preventDefault(); closeCharPalette(); _charTarget?.focus?.(); }
+  });
+
+  document.body.append(_charBox);
+  paint('');
+  field.focus();
+}
+
+function drawChars(grid) {
+  grid.replaceChildren();
+  if (!_charItems.length) {
+    grid.append(el('p', 'char-none', 'Nothing matches.'));
+    return;
+  }
+  _charItems.slice(0, 64).forEach(([ch, name], i) => {
+    const b = el('button', 'char-cell' + (i === _charIndex ? ' on' : ''), ch);
+    b.title = name;
+    b.addEventListener('mousedown', e => { e.preventDefault(); insertChar(ch); });
+    grid.append(b);
+  });
+}
+
+function insertChar(ch) {
+  if (!ch || !_charTarget) return;
+  rememberChar(ch);
+
+  if (_charTarget.getCursor) {
+    _charTarget.replaceSelection(ch);
+    closeCharPalette();
+    _charTarget.focus();
+    return;
+  }
+
+  const node = _charTarget;
+  const start = node.selectionStart ?? node.value.length;
+  const end = node.selectionEnd ?? start;
+  node.value = node.value.slice(0, start) + ch + node.value.slice(end);
+  const at = start + ch.length;
+  closeCharPalette();
+  node.focus();
+  node.setSelectionRange(at, at);
+  // Fields save on input/change, so both have to be told.
+  node.dispatchEvent(new Event('input', { bubbles: true }));
+  node.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// ── Substitution while typing ──────────────────────────────────────
+//
+// Off by default. Everywhere else this app refuses to rewrite what you
+// typed, and doing it here is only defensible because you asked for it
+// — so it stays opt-in, and a single undo takes back the substitution
+// rather than the whole word.
+
+function applySmartTyping(cm, change) {
+  if (App.typography?.smartTyping !== true) return;
+  if (change.origin !== '+input') return;
+  const typed = change.text.join('');
+  if (typed.length !== 1) return;
+
+  const cur = change.from;
+  const line = cm.getLine(cur.line) || '';
+  const before = line.slice(0, cur.ch);
+
+  // Inside a link or a code span, leave everything alone.
+  if (/\[\[[^\]]*$/.test(before)) return;
+  if ((before.match(/`/g) || []).length % 2 === 1) return;
+
+  const sub = (pattern, replacement) => {
+    const m = before.match(pattern);
+    if (!m) return false;
+    change.cancel();
+    cm.replaceRange(replacement,
+      { line: cur.line, ch: cur.ch - m[0].length },
+      { line: cur.line, ch: cur.ch });
+    return true;
+  };
+
+  if (typed === '-' && sub(/--$/, '\u2014')) return;          // --- → em dash
+  if (typed === '-' && sub(/(?<![-\u2013\u2014])-$/, '\u2013')) return;  // -- → en dash
+  if (typed === '.' && sub(/\.\.$/, '\u2026')) return;         // ... → ellipsis
+
+  if (typed === '"') {
+    change.update(change.from, change.to,
+      [/[\s([{\u2014\u2013]$|^$/.test(before) ? '\u201C' : '\u201D']);
+    return;
+  }
+  if (typed === "'") {
+    // An apostrophe inside a word is far more common than an opening
+    // quote, so a letter before it decides.
+    change.update(change.from, change.to,
+      [/[A-Za-z0-9]$/.test(before) ? '\u2019'
+        : (/[\s([{]$|^$/.test(before) ? '\u2018' : '\u2019')]);
+  }
+}
+
 // ══ Search ═════════════════════════════════════════════════════════
 //
 // One box over everything: scenes, cards, events, chapters. Opens on
@@ -6243,6 +6505,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.documentElement.classList.toggle('dark', e.target.checked);
     try { localStorage.setItem(DARK_KEY, JSON.stringify(e.target.checked)); } catch {}
   });
+  $('set-smart').addEventListener('change', e => {
+    applyTypography({ ...App.typography, smartTyping: e.target.checked });
+  });
   $('set-spellcheck').addEventListener('change', e => {
     applyTypography({ ...App.typography, spellcheck: e.target.checked });
     applyWritingAids();
@@ -6361,6 +6626,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     e.preventDefault();
     undoLast();
   }, true);
+
+  // Ctrl/Cmd-/ opens the character palette. A permanent toolbar of
+  // accents would be dead weight in every session that doesn't need one.
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === '/' || e.key === '?')) {
+      e.preventDefault();
+      _charBox ? closeCharPalette() : openCharPalette();
+    }
+  }, true);
+  document.addEventListener('mousedown', e => {
+    if (_charBox && !e.target.closest('.char-palette')) closeCharPalette();
+  });
 
   // Ctrl/Cmd-K opens search — where a decade of other tools have
   // trained everyone's hands to reach. Captured, so it works from
