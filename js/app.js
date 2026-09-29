@@ -6047,8 +6047,15 @@ function applySmartTyping(cm, change) {
     return true;
   };
 
-  if (typed === '-' && sub(/--$/, '\u2014')) return;          // --- → em dash
-  if (typed === '-' && sub(/(?<![-\u2013\u2014])-$/, '\u2013')) return;  // -- → en dash
+  if (typed === '-') {
+    // Order matters, and so does what is actually on the line. By the
+    // time the third hyphen arrives the first two have ALREADY become
+    // an en dash — looking for "--" here never matched, so the third
+    // hyphen landed as a literal and you got "–-".
+    if (sub(/\u2013$/, '\u2014')) return;   // – + -  → em dash
+    if (sub(/-$/, '\u2013')) return;        // - + -  → en dash
+    return;                                 // a lone hyphen stays one
+  }
   if (typed === '.' && sub(/\.\.$/, '\u2026')) return;         // ... → ellipsis
 
   if (typed === '"') {
