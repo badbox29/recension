@@ -797,6 +797,11 @@ function startRename(labelEl, kind, id, current) {
       // Cards carry a name, everything else a title.
       if (rec) await RecordStore.put(kind, id, kind === 'card'
         ? { ...rec, name: next } : { ...rec, title: next });
+      if (rec && kind === 'card' && current && current !== next &&
+          !(rec.aka || []).some(x => (x || '').trim().toLowerCase() === current.toLowerCase())) {
+        invalidateCardIndex();
+        offerKeepAlias(id, current);
+      }
       if (App.section === 'events') await renderEvents();
       await renderTree();
       if (App.section === 'cards') await renderCards();
@@ -3588,6 +3593,52 @@ function splitList(s) {
   return (s || '').split(',').map(x => x.trim()).filter(Boolean);
 }
 
+/**
+ * offerKeepAlias(cardId, oldName) — the rename safety net.
+ *
+ * Links are stored as text in the prose, which is what keeps a scene
+ * readable as plain markdown. The cost is that renaming a card cannot
+ * reach back into sentences you already wrote: every
+ * [[Edward Langford|Eddie]] silently stops resolving the moment the
+ * card becomes Edward Oliver Langford.
+ *
+ * Keeping the old name as an alias fixes all of them at once, without
+ * touching a word of the manuscript. Offered rather than done
+ * automatically — a card renamed because the old name was WRONG
+ * shouldn't quietly keep answering to it.
+ */
+function offerKeepAlias(cardId, oldName) {
+  const t = $('toast');
+  t.replaceChildren();
+  t.append(el('span', null, `Links still say “${oldName}”.`));
+
+  const keep = el('button', 'toast-action', 'Keep as alias');
+  keep.addEventListener('click', async () => {
+    t.hidden = true;
+    const rec = await RecordStore.get('card', cardId);
+    if (!rec) return;
+    const aka = [...(rec.aka || [])];
+    if (!aka.some(x => (x || '').trim().toLowerCase() === oldName.toLowerCase())) {
+      aka.push(oldName);
+    }
+    await RecordStore.put('card', cardId, { ...rec, aka });
+    invalidateCardIndex();
+    if (App.activeCard?.id === cardId) {
+      App.activeCard = await RecordStore.get('card', cardId);
+      $('card-aka').value = aka.join(', ');
+    }
+    await refreshWikilinkOverlay();
+    await renderCards();
+    showToast(`“${oldName}” kept as an alias.`);
+  });
+  t.append(keep);
+
+  t.hidden = false;
+  clearTimeout(_toastTimer);
+  // Longer than a normal toast: this one is a decision, not a receipt.
+  _toastTimer = setTimeout(() => { t.hidden = true; }, 12000);
+}
+
 let _cardSaveTimer = null;
 function scheduleCardSave() {
   setSyncState('dirty');
@@ -3618,6 +3669,13 @@ async function flushActiveCard() {
   await RecordStore.put('card', c.id, next);
   invalidateCardIndex();          // name or aka may have changed
   App.activeCard = { ...next };
+
+  // The old name is still written into every scene that linked here.
+  const renamed = (c.name || '').trim();
+  if (renamed && renamed !== next.name &&
+      !(next.aka || []).some(x => (x || '').trim().toLowerCase() === renamed.toLowerCase())) {
+    offerKeepAlias(c.id, renamed);
+  }
   App.lastCardType = next.cardType;
   await renderCards();
   refreshSyncState();
