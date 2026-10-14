@@ -3010,3 +3010,54 @@ kbd {
 @media (max-width: 30rem) {
   .char-grid { grid-template-columns: repeat(6, 1fr); }
 }
+
+/* ── Quote report ──────────────────────────────────────────────── */
+/* "47 characters" is only trustworthy if you can see a few of them. */
+
+.q-list { margin: 0.75rem 0; }
+
+.q-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: var(--t-sm);
+  padding: 0.3125rem 0 0.125rem;
+}
+.q-title { font-family: var(--prose); color: var(--ink); }
+.q-n {
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  color: var(--ink-faint);
+  flex: none;
+}
+
+.q-sample {
+  font-family: var(--prose);
+  font-size: var(--t-xs);
+  color: var(--ink-soft);
+  line-height: 1.5;
+  padding: 0 0 0.5rem 0.75rem;
+  border-left: 2px solid var(--rule-soft);
+  margin-bottom: 0.375rem;
+}
+
+.q-flag-head {
+  font-family: var(--prose);
+  font-size: var(--t-md);
+  font-weight: 600;
+  margin: 1.5rem 0 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-soft);
+}
+.q-flag { margin-bottom: 0.625rem; }
+.q-flag-kind {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--rubric);
+}
+.q-flag-where {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  margin-bottom: 0.125rem;
+}
