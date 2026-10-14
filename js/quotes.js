@@ -261,8 +261,83 @@ const Quotes = (() => {
     return ch;
   }
 
+  // ══ Spacing ══════════════════════════════════════════════════════
+  //
+  // The same class of problem as mixed quotes, from the same cause:
+  // text assembled on several devices. Invisible by definition, which
+  // is why it needs a tool rather than an eye.
+  //
+  // The job is narrower than "collapse runs of spaces", because some
+  // runs are load-bearing:
+  //
+  //   A line ending in exactly two spaces is a MARKDOWN HARD BREAK.
+  //   Collapsing it silently rewrites the structure of the text. This
+  //   writer doesn't use them, but the tool shouldn't assume that.
+  //
+  //   Leading spaces are indentation — lists, code, verse.
+  //
+  // So only runs BETWEEN non-space characters, mid-line, are touched.
+
+  const NBSP = '\u00A0';
+
+  /**
+   * tidySpacing(text) → { text, changes, counts }
+   *
+   * counts breaks the work down by kind, because "112 changes" tells
+   * you nothing about whether to trust it and "98 double spaces, 14
+   * non-breaking spaces" tells you everything.
+   */
+  function tidySpacing(text) {
+    if (!text) return { text: text || '', changes: 0, counts: {} };
+
+    const { out, kept } = mask(text);
+    const counts = { doubles: 0, nbsp: 0, trailing: 0, blanks: 0, prePunct: 0 };
+
+    const lines = out.split('\n');
+    const fixed = lines.map(line => {
+      let l = line;
+
+      // Non-breaking spaces, from pasting out of a browser or Word.
+      // Identical to look at, and they quietly break search.
+      const nb = (l.match(new RegExp(NBSP, 'g')) || []).length;
+      if (nb) { counts.nbsp += nb; l = l.split(NBSP).join(' '); }
+
+      // A hard break is exactly two trailing spaces. Keep those,
+      // normalise anything else at the end of the line.
+      const hard = /\S {2}$/.test(l);
+      const body0 = l.replace(/\s+$/, '');
+      const trailing = l.length - body0.length;
+      if (trailing && !hard) counts.trailing++;
+
+      // Only between two non-space characters, so indentation survives.
+      let body = body0.replace(/(\S) {2,}(?=\S)/g, (m, c) => {
+        counts.doubles++;
+        return c + ' ';
+      });
+
+      // " ," and " ." — an artefact of editing on a phone.
+      body = body.replace(/\s+([,.;:!?])/g, (m, p) => {
+        counts.prePunct++;
+        return p;
+      });
+
+      return hard ? body + '  ' : body;
+    });
+
+    // Three or more blank lines are never meaningful; one blank line
+    // is the paragraph break.
+    let joined = fixed.join('\n').replace(/\n{3,}/g, m => {
+      counts.blanks++;
+      return '\n\n';
+    });
+
+    const final = unmask(joined, kept);
+    const changes = Object.values(counts).reduce((a, b) => a + b, 0);
+    return { text: final, changes: final === text ? 0 : changes, counts };
+  }
+
   return {
-    curlText, quoteFor, typed, mask, unmask,
+    curlText, quoteFor, typed, mask, unmask, tidySpacing,
     ELISIONS, LDQUO, RDQUO, LSQUO, RSQUO,
   };
 })();

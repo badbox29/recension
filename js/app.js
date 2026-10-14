@@ -6005,14 +6005,131 @@ const FLAG_LABEL = {
 };
 
 async function applyQuoteFix(plan) {
+  return applyTextFix(plan, 'Fixed quotes');
+}
+
+// The first line that actually changes, with the change visible.
+function firstDifference(a, b, width = 60) {
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  const from = Math.max(0, i - width / 2);
+  return (from > 0 ? '…' : '') +
+         b.slice(from, Math.min(b.length, i + width / 2)).replace(/\n/g, ' ') + '…';
+}
+
+// ══ Tidy spacing ═══════════════════════════════════════════════════
+//
+// Separate from Fix Quotes on purpose. Both repair the same kind of
+// damage — text assembled across devices — but running them together
+// would make a single undecipherable count out of two different jobs,
+// and you should be able to say yes to one and no to the other.
+
+async function tidySpacing() {
+  await flushActiveScene();
+
+  const scope = await askChoice('Tidy spacing in…', [
+    ...(App.activeScene ? [{ label: `This scene — ${App.activeScene.title || 'untitled'}`, value: 'scene' }] : []),
+    { label: 'Every scene in this book', value: 'book' },
+  ]);
+  if (!scope) return;
+
+  const targets = scope === 'scene' ? [App.activeScene] : await scenesOfBook();
+
+  const plan = [];
+  const totals = { doubles: 0, nbsp: 0, trailing: 0, blanks: 0, prePunct: 0 };
+
+  for (const meta of targets) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    const r = Quotes.tidySpacing(rec.body || '');
+    if (!r.changes) continue;
+    plan.push({ id: rec.id, title: rec.title, before: rec.body, after: r.text, n: r.changes });
+    for (const k of Object.keys(totals)) totals[k] += r.counts[k] || 0;
+  }
+
+  showSpacingReport(plan, totals);
+}
+
+const SPACING_LABEL = {
+  doubles:  'runs of spaces inside a line',
+  trailing: 'lines with stray spaces at the end',
+  nbsp:     'non-breaking spaces from a paste',
+  blanks:   'runs of blank lines',
+  prePunct: 'spaces before a comma or full stop',
+};
+
+function showSpacingReport(plan, totals) {
+  const overlay = el('div', 'modal-overlay');
+  const modal = el('div', 'modal');
+  const head = el('div', 'modal-header');
+  head.append(el('h2', 'modal-title', 'Tidy spacing'));
+  const body = el('div', 'modal-body');
+
+  if (!plan.length) {
+    body.append(el('p', null, 'Spacing is already clean.'));
+  } else {
+    // Broken down by kind, because a single total tells you nothing
+    // about whether to trust it.
+    const kinds = el('div', 'q-list');
+    for (const [k, n] of Object.entries(totals)) {
+      if (!n) continue;
+      const row = el('div', 'q-row');
+      row.append(el('span', 'q-title', SPACING_LABEL[k]));
+      row.append(el('span', 'q-n', String(n)));
+      kinds.append(row);
+    }
+    body.append(kinds);
+
+    body.append(el('p', 'note',
+      `Across ${plan.length} scene${plan.length === 1 ? '' : 's'}. ` +
+      'Indented lines and markdown hard breaks — a line ending in exactly ' +
+      'two spaces — are left alone, as are code and links. One undo reverses ' +
+      'all of it.'));
+
+    const list = el('div', 'q-list');
+    for (const p of plan) {
+      const row = el('div', 'q-row');
+      row.append(el('span', 'q-title', p.title || 'Untitled scene'));
+      row.append(el('span', 'q-n', String(p.n)));
+      list.append(row);
+    }
+    body.append(list);
+  }
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'ghost-btn', plan.length ? 'Cancel' : 'Close');
+  cancel.addEventListener('click', () => overlay.remove());
+  actions.append(cancel);
+
+  if (plan.length) {
+    const go = el('button', 'solid-btn', 'Tidy them');
+    go.addEventListener('click', async () => {
+      overlay.remove();
+      await applyTextFix(plan, 'Tidied spacing');
+    });
+    actions.append(go);
+  }
+  body.append(actions);
+
+  modal.append(head, body);
+  overlay.append(modal);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
+/**
+ * applyTextFix(plan, label) — write a batch of scene bodies, undoably.
+ *
+ * Shared by both fixers: one entry on the same undo stack the rail
+ * uses, so Ctrl-Z means one thing everywhere in the app.
+ */
+async function applyTextFix(plan, label) {
   for (const p of plan) {
     const rec = await RecordStore.get('scene', p.id);
     if (rec) await RecordStore.put('scene', p.id, { ...rec, body: p.after });
   }
 
-  // One undo for the whole run — the same stack structural moves use,
-  // so Ctrl-Z means the same thing here as it does in the rail.
-  pushUndo(`Quote fix in ${plan.length} scene${plan.length === 1 ? '' : 's'}`, async () => {
+  pushUndo(`${label} in ${plan.length} scene${plan.length === 1 ? '' : 's'}`, async () => {
     for (const p of plan) {
       const rec = await RecordStore.get('scene', p.id);
       if (rec) await RecordStore.put('scene', p.id, { ...rec, body: p.before });
@@ -6025,16 +6142,7 @@ async function applyQuoteFix(plan) {
   }
   await renderTree();
   refreshSyncState();
-  showUndoToast(`Fixed quotes in ${plan.length} scene${plan.length === 1 ? '' : 's'}`);
-}
-
-// The first line that actually changes, with the change visible.
-function firstDifference(a, b, width = 60) {
-  let i = 0;
-  while (i < a.length && a[i] === b[i]) i++;
-  const from = Math.max(0, i - width / 2);
-  return (from > 0 ? '…' : '') +
-         b.slice(from, Math.min(b.length, i + width / 2)).replace(/\n/g, ' ') + '…';
+  showUndoToast(`${label} in ${plan.length} scene${plan.length === 1 ? '' : 's'}`);
 }
 
 // ══ Special characters ═════════════════════════════════════════════
@@ -6815,6 +6923,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('set-quotes').addEventListener('change', e => {
     applyTypography({ ...App.typography, smartQuotes: e.target.checked });
   });
+  $('btn-tidy-spacing').addEventListener('click', () => tidySpacing()
+    .catch(e => { console.error(e); showToast('Could not check spacing — see the console.'); }));
   $('btn-fix-quotes').addEventListener('click', () => fixQuotes()
     .catch(e => { console.error(e); showToast('Could not check quotes — see the console.'); }));
   $('set-smart').addEventListener('change', e => {
