@@ -168,6 +168,10 @@ const TYPE_DEFAULTS = {
   // Off by default: everywhere else this app refuses to rewrite what
   // you typed, and this is the one place that does.
   smartTyping: false,
+  // On by default, unlike the dash substitutions: a straight quote in
+  // a manuscript is a typo rather than a choice, and the undo-to-
+  // straight keystroke covers the rare case where it isn't.
+  smartQuotes: true,
 };
 
 function loadTypography() {
@@ -1416,7 +1420,14 @@ function ensureEditor() {
   applyWritingAids();
 
   let _overlayTimer = null;
-  cm.on('change', () => {
+  cm.on('change', (_cm, change) => {
+    // A conversion is only reversible by the keystroke immediately
+    // after it; anything else and Ctrl-Z should mean what it usually
+    // means.
+    if (_lastCurl && change.origin !== 'smart-quote') {
+      const c = _lastCurl;
+      if (change.from.line !== c.line || Math.abs(change.from.ch - c.ch) > 1) _lastCurl = null;
+    }
     scheduleSave();
     updateTally();
     if (_acMode !== 'wrap') updateAutocomplete();
@@ -1434,6 +1445,11 @@ function ensureEditor() {
   // the popup is open.
   cm.on('keydown', (_cm, e) => {
     if (autocompleteKey(_cm, e)) { e.preventDefault(); e.stopPropagation(); }
+    // Ctrl-Z straight after a curl puts the straight character back
+    // instead of undoing, which is the only way to type one on purpose.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+      if (undoCurl(_cm)) { e.preventDefault(); e.stopPropagation(); }
+    }
   });
 
   // Ctrl/Cmd-click follows a link. A plain click must stay plain — it's
@@ -1464,6 +1480,7 @@ function ensureEditor() {
   // caret is the other gesture: insert a link here, using the card's
   // own name.
   cm.on('beforeChange', (_cm, change) => {
+    applySmartQuotes(_cm, change);
     applySmartTyping(_cm, change);
     if (change.origin !== '+input' || change.text.join('') !== '[') return;
     if (!_cm.somethingSelected()) return;
@@ -1802,6 +1819,7 @@ function bindSettingsTabs() {
 function openSettings() {
   $('set-dark').checked = document.documentElement.classList.contains('dark');
   $('set-typewriter').checked = !!App.data.typewriter;
+  $('set-quotes').checked = App.typography?.smartQuotes !== false;
   $('set-smart').checked = App.typography?.smartTyping === true;
   $('set-spellcheck').checked = App.typography?.spellcheck !== false;
   $('set-autocorrect').checked = App.typography?.autocorrect !== false;
@@ -5866,6 +5884,159 @@ function offerUpdate() {
   document.body.append(bar);
 }
 
+// ══ Fix Quotes ═════════════════════════════════════════════════════
+//
+// A manuscript typed across several devices ends up with straight
+// quotes, correct curly quotes, and curly quotes facing the wrong way,
+// all in the same paragraph. This finds them.
+//
+// Scope is a choice between this scene and the whole book, because
+// fixing a twelve-scene manuscript one scene at a time is not a
+// feature. Either way it previews first and undoes in one step.
+
+async function fixQuotes() {
+  await flushActiveScene();
+
+  const scope = await askChoice('Fix quotes in…', [
+    ...(App.activeScene ? [{ label: `This scene — ${App.activeScene.title || 'untitled'}`, value: 'scene' }] : []),
+    { label: 'Every scene in this book', value: 'book' },
+  ]);
+  if (!scope) return;
+
+  const targets = scope === 'scene'
+    ? [App.activeScene]
+    : await scenesOfBook();
+
+  // Dry run first. Nothing is written until you have seen the count.
+  const plan = [];
+  let totalChanges = 0;
+  const allFlags = [];
+
+  for (const meta of targets) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    const r = Quotes.curlText(rec.body || '');
+    if (r.changes) {
+      plan.push({ id: rec.id, title: rec.title, before: rec.body, after: r.text, n: r.changes });
+      totalChanges += r.changes;
+    }
+    for (const f of r.flags) allFlags.push({ ...f, scene: rec.title || 'Untitled' });
+  }
+
+  showQuoteReport(plan, totalChanges, allFlags);
+}
+
+async function scenesOfBook() {
+  App.tree = App.tree || await RecordStore.getTree();
+  return scenesInScope(defaultReadScope());
+}
+
+function showQuoteReport(plan, totalChanges, flags) {
+  const overlay = el('div', 'modal-overlay');
+  const modal = el('div', 'modal');
+  const head = el('div', 'modal-header');
+  head.append(el('h2', 'modal-title', 'Fix quotes'));
+  const body = el('div', 'modal-body');
+
+  if (!plan.length) {
+    body.append(el('p', null, 'Every quote and apostrophe is already correct.'));
+  } else {
+    body.append(el('p', 'note',
+      `${totalChanges} character${totalChanges === 1 ? '' : 's'} in ` +
+      `${plan.length} scene${plan.length === 1 ? '' : 's'}. One undo reverses all of it.`));
+
+    const list = el('div', 'q-list');
+    for (const p of plan) {
+      const row = el('div', 'q-row');
+      row.append(el('span', 'q-title', p.title || 'Untitled scene'));
+      row.append(el('span', 'q-n', `${p.n}`));
+      list.append(row);
+      // A sample of what changes, so "47 characters" is something you
+      // can check rather than something you have to trust.
+      const sample = firstDifference(p.before, p.after);
+      if (sample) list.append(el('div', 'q-sample', sample));
+    }
+    body.append(list);
+  }
+
+  if (flags.length) {
+    body.append(el('h3', 'q-flag-head',
+      `${flags.length} to look at yourself`));
+    body.append(el('p', 'note',
+      'These are fixed with the likelier reading, but only you can be sure. ' +
+      'An apostrophe starting a word is either a nested quote or a dropped ' +
+      'letter, and they look identical.'));
+    const fl = el('div', 'q-list');
+    for (const f of flags.slice(0, 40)) {
+      const row = el('div', 'q-flag');
+      row.append(el('span', 'q-flag-kind', FLAG_LABEL[f.kind] || f.kind));
+      row.append(el('span', 'q-flag-where', `${f.scene} · line ${f.line}`));
+      row.append(el('span', 'q-sample', f.near));
+      fl.append(row);
+    }
+    body.append(fl);
+  }
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'ghost-btn', plan.length ? 'Cancel' : 'Close');
+  cancel.addEventListener('click', () => overlay.remove());
+  actions.append(cancel);
+
+  if (plan.length) {
+    const go = el('button', 'solid-btn', 'Fix them');
+    go.addEventListener('click', async () => {
+      overlay.remove();
+      await applyQuoteFix(plan);
+    });
+    actions.append(go);
+  }
+  body.append(actions);
+
+  modal.append(head, body);
+  overlay.append(modal);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
+const FLAG_LABEL = {
+  'single-open': 'Nested quote, or a dropped letter?',
+  'lone-single': 'A single quote on its own',
+  'unclosed-double': 'A quote that never closes',
+};
+
+async function applyQuoteFix(plan) {
+  for (const p of plan) {
+    const rec = await RecordStore.get('scene', p.id);
+    if (rec) await RecordStore.put('scene', p.id, { ...rec, body: p.after });
+  }
+
+  // One undo for the whole run — the same stack structural moves use,
+  // so Ctrl-Z means the same thing here as it does in the rail.
+  pushUndo(`Quote fix in ${plan.length} scene${plan.length === 1 ? '' : 's'}`, async () => {
+    for (const p of plan) {
+      const rec = await RecordStore.get('scene', p.id);
+      if (rec) await RecordStore.put('scene', p.id, { ...rec, body: p.before });
+    }
+    if (App.activeScene) await openScene(App.activeScene.id);
+  });
+
+  if (App.activeScene && plan.some(p => p.id === App.activeScene.id)) {
+    await openScene(App.activeScene.id);
+  }
+  await renderTree();
+  refreshSyncState();
+  showUndoToast(`Fixed quotes in ${plan.length} scene${plan.length === 1 ? '' : 's'}`);
+}
+
+// The first line that actually changes, with the change visible.
+function firstDifference(a, b, width = 60) {
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  const from = Math.max(0, i - width / 2);
+  return (from > 0 ? '…' : '') +
+         b.slice(from, Math.min(b.length, i + width / 2)).replace(/\n/g, ' ') + '…';
+}
+
 // ══ Special characters ═════════════════════════════════════════════
 //
 // Two different needs, solved two different ways.
@@ -6080,6 +6251,77 @@ function insertChar(ch) {
 // typed, and doing it here is only defensible because you asked for it
 // — so it stays opt-in, and a single undo takes back the substitution
 // rather than the whole word.
+
+/**
+ * applySmartQuotes(cm, change) — curl as you type, and on paste.
+ *
+ * Shares Quotes.typed() with the fixer, so the two cannot drift into
+ * disagreeing about what a quote means. Typing knows only what is to
+ * the left; the fixer, which can see both sides, is what settles the
+ * rest.
+ *
+ * Pasted text goes through the full fixer, because a paste has all its
+ * context at once — there is no reason to treat it as a stream of
+ * single characters.
+ */
+let _lastCurl = null;   // for undo-to-straight
+
+function applySmartQuotes(cm, change) {
+  if (App.typography?.smartQuotes === false) return;
+
+  const text = change.text.join('\n');
+
+  // A paste, or any multi-character insert: run the real fixer over it.
+  if (change.origin === 'paste' || text.length > 1) {
+    if (!/["']/.test(text)) return;
+    const curled = Quotes.curlText(text).text;
+    if (curled !== text) change.update(change.from, change.to, curled.split('\n'));
+    return;
+  }
+
+  if (change.origin !== '+input' || (text !== '"' && text !== "'")) return;
+
+  const cur = change.from;
+  const line = cm.getLine(cur.line) || '';
+  const before = line.slice(0, cur.ch);
+
+  // Code and links are not prose.
+  if (/\[\[[^\]|]*$/.test(before)) return;
+  if ((before.match(/`/g) || []).length % 2 === 1) return;
+
+  const prev = before.slice(-1);
+  const out = Quotes.typed(text, prev);
+  if (out === text) return;
+
+  change.update(change.from, change.to, [out]);
+
+  // Remembered so the very next Ctrl-Z can put the straight character
+  // back rather than undoing the whole word — Word's behaviour, and
+  // the only way to type a straight quote deliberately.
+  _lastCurl = { line: cur.line, ch: cur.ch, curly: out, straight: text, at: Date.now() };
+}
+
+/**
+ * undoCurl(cm) → true if it handled the keystroke.
+ *
+ * Only valid immediately after a conversion, at the same position.
+ * Anything else and this must get out of the way so the normal undo
+ * stack behaves.
+ */
+function undoCurl(cm) {
+  const c = _lastCurl;
+  _lastCurl = null;
+  if (!c) return false;
+  if (Date.now() - c.at > 5000) return false;
+
+  const cur = cm.getCursor();
+  if (cur.line !== c.line || cur.ch !== c.ch + 1) return false;
+  const now = cm.getRange({ line: c.line, ch: c.ch }, { line: c.line, ch: c.ch + 1 });
+  if (now !== c.curly) return false;
+
+  cm.replaceRange(c.straight, { line: c.line, ch: c.ch }, { line: c.line, ch: c.ch + 1 });
+  return true;
+}
 
 function applySmartTyping(cm, change) {
   if (App.typography?.smartTyping !== true) return;
@@ -6570,6 +6812,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.documentElement.classList.toggle('dark', e.target.checked);
     try { localStorage.setItem(DARK_KEY, JSON.stringify(e.target.checked)); } catch {}
   });
+  $('set-quotes').addEventListener('change', e => {
+    applyTypography({ ...App.typography, smartQuotes: e.target.checked });
+  });
+  $('btn-fix-quotes').addEventListener('click', () => fixQuotes()
+    .catch(e => { console.error(e); showToast('Could not check quotes — see the console.'); }));
   $('set-smart').addEventListener('change', e => {
     applyTypography({ ...App.typography, smartTyping: e.target.checked });
   });
