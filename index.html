@@ -405,6 +405,10 @@
           <input type="checkbox" id="set-typewriter" />
         </label>
         <label class="row">
+          <span>Curly quotes <small class="row-hint">as you type and on paste</small></span>
+          <input type="checkbox" id="set-quotes" />
+        </label>
+        <label class="row">
           <span>Smart punctuation <small class="row-hint">-- becomes an en dash, ... an ellipsis, quotes curl</small></span>
           <input type="checkbox" id="set-smart" />
         </label>
@@ -416,6 +420,13 @@
           <span>Autocorrect and capitals <small class="row-hint">on phones and tablets</small></span>
           <input type="checkbox" id="set-autocorrect" />
         </label>
+        <div class="btn-row">
+          <button class="ghost-btn" id="btn-fix-quotes">Fix quotes in existing text</button>
+        </div>
+        <p class="note">Checks a scene or the whole book for straight quotes and
+          ones curling the wrong way. Shows you what it found before changing
+          anything, and one <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes the lot.</p>
+
         <p class="note">Press <kbd>Ctrl</kbd>+<kbd>/</kbd> anywhere you can type to
           insert an accent or a symbol — search by name (“acute”, “dagger”) or by
           letter. The ones you use most come up first.</p>
@@ -661,6 +672,7 @@
 <script src="js/vendor/easymde.min.js"></script>
 <script src="js/vendor/fflate.min.js"></script>
 <script src="js/auth.js"></script>
+<script src="js/quotes.js"></script>
 <script src="js/recordStore.js"></script>
 <script src="js/sync.js"></script>
 <script src="js/app.js"></script>

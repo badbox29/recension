@@ -41,7 +41,7 @@
  * the network returns.
  */
 
-const SW_VERSION = 'v29';
+const SW_VERSION = 'v30';
 const CACHE = `recension-${SW_VERSION}`;
 const FONT_CACHE = 'recension-fonts';
 
@@ -52,6 +52,7 @@ const SHELL = [
   './manifest.webmanifest',
   './css/styles.css',
   './js/auth.js',
+  './js/quotes.js',
   './js/recordStore.js',
   './js/sync.js',
   './js/app.js',
