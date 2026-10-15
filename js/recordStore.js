@@ -361,6 +361,29 @@ const RecordStore = (() => {
   }
 
   /**
+   * putMeta(type, id, rec) — change bookkeeping WITHOUT restamping.
+   *
+   * Moving a record between projects, detaching a child from a deleted
+   * parent, clearing a dangling beat reference — none of these are
+   * edits to the writing, and none should make a record look newly
+   * written.
+   *
+   * This matters more than it sounds. put() sets updatedAt to now, so
+   * a device that booted holding a stale copy and ran the project
+   * repair rewrote every one of its old records with a current
+   * timestamp — and newest-wins then pushed days-old text over
+   * everything, on every device. Bookkeeping must be invisible to
+   * reconciliation.
+   */
+  async function putMeta(type, id, rec) {
+    if (!TYPES.includes(type) || !id || !rec) return false;
+    const ok = await _write(type, id, { ...rec, id });
+    if (ok && type === 'card') invalidateCards();
+    if (ok && typeof Sync !== 'undefined') Sync.markDirty(type, id);
+    return ok;
+  }
+
+  /**
    * putLocal(type, id, rec) — sync pulled this from the server. Writes it
    * verbatim (updatedAt is the server's) and does NOT mark dirty.
    *
@@ -501,7 +524,7 @@ const RecordStore = (() => {
     for (const type of PROJECT_SCOPED) {
       for (const rec of Object.values(await getAll(type))) {
         if (rec.projectId && alive.has(rec.projectId)) continue;
-        await put(type, rec.id, { ...rec, projectId: home });
+        await putMeta(type, rec.id, { ...rec, projectId: home });
         adopted++;
       }
     }
@@ -544,7 +567,7 @@ const RecordStore = (() => {
 
     for (const type of PROJECT_SCOPED) {
       for (const rec of Object.values(await getAll(type))) {
-        if (drop.has(rec.projectId)) await put(type, rec.id, { ...rec, projectId: keep.id });
+        if (drop.has(rec.projectId)) await putMeta(type, rec.id, { ...rec, projectId: keep.id });
       }
     }
     // The survivor keeps the marker so later devices merge silently.
@@ -628,7 +651,7 @@ const RecordStore = (() => {
     // scene deletion is allowed to lose words.
     for (const type of PROJECT_SCOPED) {
       for (const rec of Object.values(await getAll(type))) {
-        if (rec.projectId === id) await put(type, rec.id, { ...rec, projectId: null });
+        if (rec.projectId === id) await putMeta(type, rec.id, { ...rec, projectId: null });
       }
     }
     return remove('project', id);
@@ -731,10 +754,10 @@ const RecordStore = (() => {
     // Children are detached, not destroyed, and scenes keep their text
     // — the same rule as everywhere: only deleting a scene loses words.
     for (const b of Object.values(await getAllIn('beat'))) {
-      if (b.parentId === id) await put('beat', b.id, { ...b, parentId: null });
+      if (b.parentId === id) await putMeta('beat', b.id, { ...b, parentId: null });
     }
     for (const sc of Object.values(await getAll('scene'))) {
-      if (sc.beatId === id) await put('scene', sc.id, { ...sc, beatId: null });
+      if (sc.beatId === id) await putMeta('scene', sc.id, { ...sc, beatId: null });
     }
     return remove('beat', id);
   }
@@ -1288,10 +1311,10 @@ const RecordStore = (() => {
 
   async function deleteBook(id) {
     for (const p of Object.values(await getAll('part'))) {
-      if (p.bookId === id) await put('part', p.id, { ...p, bookId: null });
+      if (p.bookId === id) await putMeta('part', p.id, { ...p, bookId: null });
     }
     for (const c of Object.values(await getAll('chapter'))) {
-      if (c.bookId === id) await put('chapter', c.id, { ...c, bookId: null });
+      if (c.bookId === id) await putMeta('chapter', c.id, { ...c, bookId: null });
     }
     return remove('book', id);
   }
@@ -1302,7 +1325,7 @@ const RecordStore = (() => {
     const part = await get('part', id);
     for (const c of Object.values(await getAll('chapter'))) {
       if (c.partId === id) {
-        await put('chapter', c.id, { ...c, partId: null, bookId: part?.bookId || c.bookId });
+        await putMeta('chapter', c.id, { ...c, partId: null, bookId: part?.bookId || c.bookId });
       }
     }
     return remove('part', id);
@@ -1381,7 +1404,7 @@ const RecordStore = (() => {
 
   return {
     // Core
-    get, getAll, getIndex, put, putLocal, remove, removeLocal,
+    get, getAll, getIndex, put, putMeta, putLocal, remove, removeLocal,
     // Tree
     moveRecord,
     createBeat, beatsAt, beatTree, unplannedScenes, deleteBeat,

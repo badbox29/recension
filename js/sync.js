@@ -66,6 +66,7 @@
  *   onProgress      fn  ({done, total, phase}) → optional, fresh-device UI
  *   onAuthFailure   fn  () → Promise<bool>; true = credentials refreshed, retry
  *   onPulled        fn  (result) → after a scheduled or visibility pull succeeds
+ *   onSuperseded    fn  (n) → n local changes were older than the server's
  *   toast           fn  (message)
  * ============================================================
  */
@@ -329,6 +330,51 @@ const Sync = (() => {
    * Only confirmed ids are cleared from the dirty set (invariant 3). Anything
    * that fails stays dirty and is retried on the next flush.
    */
+  /**
+   * remoteIndex() — every key the server holds, with its updatedAt.
+   *
+   * One request, metadata only, no bodies. Cheap enough to do before
+   * every flush, which is the point: a push that doesn't know what
+   * the server already has cannot avoid clobbering it.
+   */
+  async function remoteIndex() {
+    const out = {};
+    let cursor = null;
+    do {
+      const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      const r = await withAuthRetry(() => request('GET', `/storage/${tokenPath()}${q}`));
+      if (!r.ok) return null;
+      for (const k of r.data?.keys || []) out[k.key] = k.metadata?.u || 0;
+      cursor = r.data?.cursor || null;
+    } while (cursor);
+    return out;
+  }
+
+  /**
+   * flush() — push everything in the dirty set.
+   *
+   * A dirty key whose record is missing locally is a DELETE (the local
+   * record was removed via deleteRecord, which tombstoned it first).
+   * Present records are writes.
+   *
+   * ── IT CHECKS THE SERVER FIRST ──────────────────────────────
+   * This used to write unconditionally, and that was the hole a
+   * fortnight of work fell through. A machine opened after two days
+   * away flushed a stale dirty set over everything, on every device,
+   * with no warning and no way back short of a backup.
+   *
+   * Now: if the server's copy of a record is NEWER than the one about
+   * to be pushed, the push is abandoned for that record and the server
+   * copy is taken instead. Newest-wins, applied in the direction that
+   * cannot destroy work nobody has a copy of — the local edit was
+   * never uploaded, so losing it costs one device's change, while the
+   * reverse costs whatever every other device has done since.
+   *
+   * Skips are reported rather than silent. A sync that quietly decides
+   * against you is worse than one that fails.
+   *
+   * Only confirmed ids are cleared from the dirty set (invariant 3).
+   */
   async function flush() {
     if (_flushing || C.isGuest() || !base()) return { ok: false, skipped: true };
     _flushing = true;
@@ -338,8 +384,17 @@ const Sync = (() => {
       const dirty = await getDirtyKeys();
       if (!dirty.length) { C.onStatus('idle'); return { ok: true, pushed: 0 }; }
 
-      const writes  = {};   // userKey → { value, meta }
-      const deletes = [];   // userKey
+      const remote = await remoteIndex();
+      // If the listing failed the network is unwell; pushing blind is
+      // exactly what this guard exists to prevent.
+      if (remote === null) {
+        C.onStatus('error', 'Could not reach sync');
+        return { ok: false, pushed: 0 };
+      }
+
+      const writes  = {};
+      const deletes = [];
+      const superseded = [];
       let pushAccount = false;
       let pushTombs   = false;
 
@@ -349,24 +404,38 @@ const Sync = (() => {
 
         const [type, id] = splitKey(key);
         if (!TYPES.includes(type)) {
-          // Nothing can push this, so leaving it dirty means it sits
-          // there for ever and the pending count never reaches zero.
-          // Drop it and say so rather than quietly accumulating.
           console.warn('[Sync] dropping dirty key of unknown type:', key);
-          confirmedUnknown.push(key);
+          superseded.push(key);
           continue;
         }
 
         const rec = await C.getRecord(type, id);
         if (!rec) { deletes.push(key); continue; }
+
+        const theirs = remote[key];
+        if (theirs && theirs > (rec.updatedAt || 0)) {
+          // Someone else got there later. Take their copy rather than
+          // overwrite it, and stop claiming this record is ours to push.
+          const r = await withAuthRetry(() => request(
+            'POST', `/storage/${tokenPath()}/bulk`,
+            { body: JSON.stringify({ ids: [key] }) }));
+          const fresh = r.ok && r.data?.values?.[key];
+          if (fresh) {
+            await C.putRecord(type, id, fresh);
+            superseded.push(key);
+            continue;
+          }
+          // Couldn't fetch it — leave it dirty and try again later
+          // rather than push over something newer.
+          continue;
+        }
+
         writes[key] = { value: rec, meta: C.buildMeta(type, rec) };
       }
 
-      const confirmed = [];
-      const confirmedUnknown = [];
+      const confirmed = [...superseded];
       let failedAny = false;
 
-      // Writes, in batches of BULK_WRITE_MAX.
       const writeEntries = Object.entries(writes);
       for (let i = 0; i < writeEntries.length; i += BULK_WRITE_MAX) {
         const chunk = Object.fromEntries(writeEntries.slice(i, i + BULK_WRITE_MAX));
@@ -383,12 +452,9 @@ const Sync = (() => {
         }
       }
 
-      // Deletes are individual — there is no bulk delete, and deletes are
-      // rare enough (human-paced) that it doesn't matter.
       for (const key of deletes) {
         const r = await withAuthRetry(() =>
           request('DELETE', `/storage/${tokenPath()}/${key}`));
-        // 404 means it was already gone — that's success for our purposes.
         if (r.ok || r.status === 404) confirmed.push(key);
         else { failedAny = true; break; }
       }
@@ -407,19 +473,25 @@ const Sync = (() => {
         if (ok) confirmed.push(ACCOUNT_KEY); else failedAny = true;
       }
 
-      await clearDirty([...confirmed, ...confirmedUnknown]);
+      await clearDirty(confirmed);
       await metaSet('lastSync', Date.now());
+
+      if (superseded.length) {
+        // Said out loud. The alternative is a device quietly deciding
+        // your work lost an argument it never told you about.
+        C.onSuperseded?.(superseded.length);
+      }
 
       if (failedAny) {
         _backoff = Math.min(_backoff ? _backoff * 2 : 15_000, MAX_BACKOFF);
         setTimeout(() => flush(), _backoff);
         C.onStatus('error', 'Some changes not yet synced');
-        return { ok: false, pushed: confirmed.length };
+        return { ok: false, pushed: confirmed.length, superseded: superseded.length };
       }
 
       _backoff = 0;
       C.onStatus('idle');
-      return { ok: true, pushed: confirmed.length };
+      return { ok: true, pushed: confirmed.length, superseded: superseded.length };
 
     } finally {
       _flushing = false;

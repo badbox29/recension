@@ -7093,6 +7093,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     onPulled: () => afterPull(),
 
     /**
+     * Local changes that were older than the server's copy, so the
+     * server's was kept. Said plainly rather than swallowed: a sync
+     * that quietly decides against you is worse than one that fails,
+     * and this is the exact situation that cost a fortnight of work
+     * when the push used to overwrite regardless.
+     */
+    onSuperseded: n => showToast(
+      `${n} change${n === 1 ? ' was' : 's were'} older than the copy on your ` +
+      'other devices, so those were kept.', 8000),
+
+    /**
      * This device is holding a token that has since been upgraded to
      * Google sign-in on another device. The token is dead — /auth/migrate
      * deletes the source key space — so there is nothing to recover by
