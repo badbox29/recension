@@ -5894,15 +5894,22 @@ async function renderStorageStatus() {
  * middle of a manuscript check.
  */
 function checkModuleVersions() {
-  const need = {
-    Quotes: ['curlText', 'tidySpacing', 'checkQuotes', 'typed'],
-    RecordStore: ['getTree', 'linkGraph', 'search', 'beatTree', 'reconcileAutoProjects'],
-    Sync: ['flush', 'pull', 'pushAll', 'resetDirty'],
-  };
+  // Referenced DIRECTLY, not through window. Each module is declared
+  // with `const`, and a top-level const is not a property of the
+  // global object — only `var` and function declarations are. Looking
+  // them up on window found nothing and reported every file as stale
+  // while all of them were present and correct.
+  const need = [
+    ['quotes', typeof Quotes === 'undefined' ? null : Quotes,
+     ['curlText', 'tidySpacing', 'checkQuotes', 'typed']],
+    ['recordStore', typeof RecordStore === 'undefined' ? null : RecordStore,
+     ['getTree', 'linkGraph', 'search', 'beatTree', 'reconcileAutoProjects']],
+    ['sync', typeof Sync === 'undefined' ? null : Sync,
+     ['flush', 'pull', 'pushAll', 'resetDirty']],
+  ];
 
   const stale = [];
-  for (const [name, fns] of Object.entries(need)) {
-    const mod = window[name];
+  for (const [name, mod, fns] of need) {
     if (!mod) { stale.push(`${name} (missing)`); continue; }
     const absent = fns.filter(f => typeof mod[f] !== 'function');
     if (absent.length) stale.push(`${name} (no ${absent.join(', ')})`);
