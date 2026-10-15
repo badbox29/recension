@@ -52,12 +52,39 @@ const Quotes = (() => {
     'gainst', 'neath', 'tween', 'tis', 'twas', 'twere', 'twould',
     'n', 'sup', 'murica', 'specially', 'scuse', 'spose', 'cept',
     'fraid', 'course', 'nuff', 'kay', 'lo', 'pon', 'ere', 'ope',
+    'dors',
   ];
 
-  // Opening a quote is natural after these: nothing at all, a space, an
-  // opening bracket, a dash, or an ellipsis. Anything else means the
-  // quote is closing something.
-  const OPENS_AFTER = /[\s(\[{\u2014\u2013\u2026\u201C\u2018<]/;
+  /**
+   * opensHere(before) — does a quote at this position open or close?
+   *
+   * The rule is about WHITESPACE, not punctuation. An earlier version
+   * treated a dash or an ellipsis as opening context, which is wrong
+   * in the commonest line in any novel:
+   *
+   *     "Eddie, I—"      the last quote CLOSES
+   *     "goes…"          so does this one
+   *
+   * A dash only opens when the dash itself begins a phrase — "He said
+   * —“Go.”" — so it has to look past the dash at what precedes it.
+   */
+  function opensHere(before) {
+    if (!before) return true;
+    const last = before.slice(-1);
+    if (/\s/.test(last)) return true;
+    if (/[([{]/.test(last)) return true;
+    if (last === LDQUO || last === LSQUO) return true;
+
+    // A lead-in dash, and only a lead-in dash.
+    if (last === '\u2014' || last === '\u2013' || last === '-') {
+      const rest = before.slice(0, -1).replace(/[\u2014\u2013-]+$/, '');
+      return rest === '' || /\s$/.test(rest);
+    }
+
+    // Everything else — a letter, a comma, a full stop, an ellipsis,
+    // a closing bracket — means this quote closes something.
+    return false;
+  }
 
   const WORD = /[A-Za-z0-9\u00C0-\u024F]/;
 
@@ -106,37 +133,67 @@ const Quotes = (() => {
    * while typing, and the rules are arranged so its absence only
    * affects cases that are already ambiguous.
    */
-  function quoteFor(ch, before, after, word = '') {
+  /**
+   * quoteFor(ch, before, after, word, closesLater)
+   *
+   * `before` is everything to the left on this line — not one
+   * character, because a lead-in dash has to be told apart from a
+   * trailing one. `closesLater` is whether a matching single quote
+   * appears before the end of the paragraph; the fixer can answer
+   * that and live typing cannot, which is the whole difference
+   * between them.
+   */
+  function quoteFor(ch, before, after, word = '', closesLater = false) {
     if (ch === '"') {
-      const opening = before === '' || OPENS_AFTER.test(before);
-      return { ch: opening ? LDQUO : RDQUO };
+      return { ch: opensHere(before) ? LDQUO : RDQUO };
     }
 
-    // An apostrophe inside a word is always an apostrophe: don’t,
-    // Eddie’s, y’know, nobody’d.
-    if (WORD.test(before) && WORD.test(after)) return { ch: RSQUO };
+    const prev = before.slice(-1);
 
-    // After a word with nothing word-like following: a possessive
-    // plural (the boys’) or a closing single quote. Both are the same
-    // glyph, so there is nothing to decide.
-    if (WORD.test(before)) return { ch: RSQUO };
+    // Inside a word: don’t, Eddie’s, y’know. Always an apostrophe.
+    if (WORD.test(prev) && WORD.test(after)) return { ch: RSQUO };
 
-    // At the start of a word.
-    if (before === '' || OPENS_AFTER.test(before)) {
-      // Digits are unambiguous: ’84, ’90s.
+    // After a word: a possessive plural (the boys’) or a closing
+    // single quote. Identical glyph, so nothing to decide.
+    if (WORD.test(prev)) return { ch: RSQUO };
+
+    if (opensHere(before)) {
+      // A two-digit year is never a quotation: ’84, ’90s.
       if (/[0-9]/.test(after)) return { ch: RSQUO };
 
+      // Known dropped letters.
       if (word && ELISIONS.includes(word.toLowerCase())) return { ch: RSQUO };
 
-      // Opening a nested single quote — correct in American usage
-      // inside dialogue, and the right default here. Flagged because
-      // the alternative is an unlisted elision, and only you can tell.
-      if (WORD.test(after)) return { ch: LSQUO, flag: 'single-open' };
+      // Otherwise it opens a quotation only if something closes it
+      // later in the same paragraph. ‘Six’ does; ’dors does not.
+      if (WORD.test(after)) {
+        return closesLater ? { ch: LSQUO } : { ch: RSQUO, flag: 'single-open' };
+      }
 
       return { ch: LSQUO, flag: 'lone-single' };
     }
 
     return { ch: RSQUO };
+  }
+
+  /**
+   * closesLater(text, i) — is there a matching single quote before the
+   * end of this paragraph?
+   *
+   * This is what separates ‘Six’ from ’dors without a word list.
+   * A quotation has a close; a dropped letter does not. Only the
+   * fixer can ask it — while typing, the rest of the sentence does
+   * not exist yet.
+   */
+  function closesLater(text, i) {
+    const end = text.indexOf('\n\n', i);
+    const stop = end === -1 ? text.length : end;
+    for (let k = i + 1; k < stop; k++) {
+      if (text[k] !== "'") continue;
+      // A closing single follows a non-space: Six' rather than 'Six.
+      if (!/\s/.test(text[k - 1] || ' ')) return true;
+    }
+    return false;
   }
 
   // The word following an apostrophe, for the elision check.
@@ -178,9 +235,17 @@ const Quotes = (() => {
 
       if (c !== '"' && c !== "'") { result += c; continue; }
 
-      const before = i > 0 ? flat[i - 1] : '';
+      // The left-hand side AS ALREADY CONVERTED, not as typed. A quote
+      // directly after an opening “ opens too — and in the flattened
+      // text that “ is still a straight quote, which reads as closing
+      // context and got ‘Six’ wrong.
+      const lineStart = result.lastIndexOf('\n') + 1;
+      const before = result.slice(lineStart);
       const after = i < flat.length - 1 ? flat[i + 1] : '';
-      const { ch, flag } = quoteFor(c, before, after, c === "'" ? wordAfter(flat, i) : '');
+      const { ch, flag } = quoteFor(
+        c, before, after,
+        c === "'" ? wordAfter(flat, i) : '',
+        c === "'" ? closesLater(flat, i) : false);
 
       if (c === '"') {
         if (ch === LDQUO) {
@@ -261,6 +326,66 @@ const Quotes = (() => {
     return ch;
   }
 
+  /**
+   * checkQuotes(text) → [{ line, kind, near }]
+   *
+   * Report only. Counts “ and ” per paragraph and names the ones that
+   * don't balance, with the one exception that matters in fiction:
+   *
+   *   Dialogue running over a paragraph break legitimately opens with
+   *   “ and never closes, because the speech continues. That is only
+   *   correct if the NEXT paragraph also opens with “ — otherwise the
+   *   quote really is unclosed, and the difference is invisible to
+   *   read past.
+   *
+   * Nothing here is fixed automatically. An unbalanced quote is a
+   * question about what you meant, not a typo with one right answer.
+   */
+  function checkQuotes(text) {
+    if (!text) return [];
+    const { out } = mask(text);
+    const paras = out.split(/\n{2,}/);
+    const flags = [];
+
+    // Line number of each paragraph's first line.
+    let line = 1;
+    const lineOf = paras.map(p => {
+      const at = line;
+      line += p.split('\n').length + 1;
+      return at;
+    });
+
+    const opensWith = p => /^\s*[\u201C"]/.test(p);
+
+    paras.forEach((p, i) => {
+      const opens = (p.match(/\u201C/g) || []).length;
+      const closes = (p.match(/\u201D/g) || []).length;
+      if (opens === closes) return;
+
+      if (opens === closes + 1) {
+        // One unclosed quote — valid only if the speech carries on.
+        const next = paras[i + 1];
+        if (next !== undefined && opensWith(next)) return;
+        flags.push({ line: lineOf[i], kind: 'unclosed-double', near: snippet(p) });
+        return;
+      }
+
+      if (closes > opens) {
+        flags.push({ line: lineOf[i], kind: 'stray-close', near: snippet(p) });
+        return;
+      }
+
+      flags.push({ line: lineOf[i], kind: 'unbalanced', near: snippet(p) });
+    });
+
+    return flags;
+  }
+
+  function snippet(p, width = 64) {
+    const one = p.replace(/\s+/g, ' ').trim();
+    return one.length > width ? one.slice(0, width) + '…' : one;
+  }
+
   // ══ Spacing ══════════════════════════════════════════════════════
   //
   // The same class of problem as mixed quotes, from the same cause:
@@ -294,7 +419,7 @@ const Quotes = (() => {
     const counts = { doubles: 0, nbsp: 0, trailing: 0, blanks: 0, prePunct: 0 };
 
     const lines = out.split('\n');
-    const fixed = lines.map(line => {
+    const fixed = lines.map((line, idx) => {
       let l = line;
 
       // Non-breaking spaces, from pasting out of a browser or Word.
@@ -302,9 +427,14 @@ const Quotes = (() => {
       const nb = (l.match(new RegExp(NBSP, 'g')) || []).length;
       if (nb) { counts.nbsp += nb; l = l.split(NBSP).join(' '); }
 
-      // A hard break is exactly two trailing spaces. Keep those,
-      // normalise anything else at the end of the line.
-      const hard = /\S {2}$/.test(l);
+      // A hard break is exactly two trailing spaces AND a line of text
+      // after it. Two spaces at the end of a paragraph break nothing —
+      // there is no following line to break onto — so they are just
+      // stray whitespace. Tabs and runs of three or more are never a
+      // hard break.
+      const next = lines[idx + 1];
+      const hard = / {2}$/.test(l) && !/ {3}$|\t$/.test(l)
+                   && next !== undefined && next.trim() !== '';
       const body0 = l.replace(/\s+$/, '');
       const trailing = l.length - body0.length;
       if (trailing && !hard) counts.trailing++;
@@ -337,7 +467,7 @@ const Quotes = (() => {
   }
 
   return {
-    curlText, quoteFor, typed, mask, unmask, tidySpacing,
+    curlText, quoteFor, typed, mask, unmask, tidySpacing, checkQuotes,
     ELISIONS, LDQUO, RDQUO, LSQUO, RSQUO,
   };
 })();

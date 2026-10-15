@@ -5884,6 +5884,38 @@ async function renderStorageStatus() {
 // new assets, so it says so and offers a reload rather than swapping
 // things out underneath someone who is writing.
 
+/**
+ * checkModuleVersions() — catch a half-deployed upload at boot.
+ *
+ * app.js, quotes.js, sync.js and recordStore.js are one unit. Upload
+ * three of four and the app starts fine and then throws partway
+ * through whatever uses the missing piece — which is how a stale
+ * quotes.js surfaced as "Quotes.checkQuotes is not a function" in the
+ * middle of a manuscript check.
+ */
+function checkModuleVersions() {
+  const need = {
+    Quotes: ['curlText', 'tidySpacing', 'checkQuotes', 'typed'],
+    RecordStore: ['getTree', 'linkGraph', 'search', 'beatTree', 'reconcileAutoProjects'],
+    Sync: ['flush', 'pull', 'pushAll', 'resetDirty'],
+  };
+
+  const stale = [];
+  for (const [name, fns] of Object.entries(need)) {
+    const mod = window[name];
+    if (!mod) { stale.push(`${name} (missing)`); continue; }
+    const absent = fns.filter(f => typeof mod[f] !== 'function');
+    if (absent.length) stale.push(`${name} (no ${absent.join(', ')})`);
+  }
+
+  if (!stale.length) return;
+  console.error('[Recension] out-of-date file:', stale.join('; '));
+  // Said once, in the open, rather than as a stack trace later.
+  setTimeout(() => showToast(
+    `An app file is out of date — ${stale[0].split(' ')[0]}.js. ` +
+    'Re-upload it and reload.', 12000), 1500);
+}
+
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   // A service worker needs a secure context. On localhost over http it
@@ -7074,6 +7106,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ── Events ──────────────────────────────────────────────────────
+  // The js files have to be deployed as a set. A stale one of them
+  // produces a stack trace in the middle of an operation rather than
+  // anything a person can act on, so check at boot and say plainly
+  // which file is behind.
+  checkModuleVersions();
+
   // sync.js takes its type list from the store now, but a mismatch
   // here would silently strand records — and did, for weeks. Assert it
   // rather than trust it.
