@@ -3061,3 +3061,11 @@ kbd {
   color: var(--ink-faint);
   margin-bottom: 0.125rem;
 }
+
+/* A scene break in the reading view and read-through. Centred, with
+   normal spacing — manuscript convention, and never a heading. */
+.scene-break {
+  text-align: center;
+  color: var(--ink-faint);
+  margin: 1.75rem 0;
+}
