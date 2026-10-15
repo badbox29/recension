@@ -4772,9 +4772,9 @@ async function readBackupFile(file) {
 
 function describeBackup(data) {
   const r = data?.records || {};
-  const count = t => Object.keys(r[t] || {}).length;
+  const count = t => Object.keys(RecordStore.bucket(r, t) || {}).length;
   const when = data?.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'unknown date';
-  const projects = Object.keys(r.projects || {}).length;
+  const projects = count('project');
   const bits = [
     [projects, 'project'], [count('book'), 'book'], [count('part'), 'part'],
     [count('chapter'), 'chapter'], [count('scene'), 'scene'],
@@ -4782,7 +4782,7 @@ function describeBackup(data) {
   ].filter(([n]) => n)
    .map(([n, label]) => `${n} ${label}${n === 1 ? '' : 's'}`);
 
-  const words = Object.values(r.scene || {})
+  const words = Object.values(RecordStore.bucket(r, 'scene') || {})
     .reduce((n, s) => n + (s.wordCount || 0), 0);
   const images = Object.keys(data?._images || {}).length;
   if (images) bits.push(`${images} image${images === 1 ? '' : 's'}`);
@@ -4841,9 +4841,12 @@ async function runImport(file) {
   // every view, because the migration only runs when NO project exists
   // — and by now one does. Adopt them into the project you're in.
   const adopted = { ...data.records };
-  for (const type of ['book', 'card', 'event']) {
-    if (!adopted[type]) continue;
-    adopted[type] = Object.fromEntries(Object.entries(adopted[type]).map(([id, rec]) =>
+  for (const type of ['book', 'card', 'event', 'beat']) {
+    // Same plural/singular trap as the importer — this loop silently
+    // adopted nothing for the same reason.
+    const key = adopted[type] ? type : RecordStore.PLURAL[type];
+    if (!adopted[key]) continue;
+    adopted[key] = Object.fromEntries(Object.entries(adopted[key]).map(([id, rec]) =>
       [id, rec.projectId ? rec : { ...rec, projectId: RecordStore.currentProject() }]));
   }
 

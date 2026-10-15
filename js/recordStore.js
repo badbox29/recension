@@ -114,6 +114,19 @@ const RecordStore = (() => {
   // novels, one set of characters — works without duplicating anyone.
   const PROJECT_SCOPED = ['book', 'card', 'event', 'beat'];
 
+  // A backup file names its buckets in the PLURAL — `scenes`, `cards`
+  // — while TYPES is singular. Import read the singular names, found
+  // nothing, and reported an empty file. Accept both: the plural is
+  // what every backup written so far contains, and no file already on
+  // someone's disk can be changed now.
+  const PLURAL = {
+    project: 'projects', book: 'books', part: 'parts', chapter: 'chapters',
+    scene: 'scenes', card: 'cards', event: 'events', beat: 'beats',
+  };
+  function bucket(records, type) {
+    return records[type] || records[PLURAL[type]] || null;
+  }
+
   let _dbPromise = null;
 
   // ── Connection ────────────────────────────────────────────────────
@@ -1333,7 +1346,7 @@ const RecordStore = (() => {
     if (mode === 'replace') await clear();
 
     for (const type of TYPES) {
-      const incoming = records[type];
+      const incoming = bucket(records, type);
       if (!incoming || typeof incoming !== 'object') continue;
       stats.byType[type] = 0;
 
@@ -1373,6 +1386,7 @@ const RecordStore = (() => {
     moveRecord,
     createBeat, beatsAt, beatTree, unplannedScenes, deleteBeat,
     BEAT_LEVELS, BEAT_ROLES,
+    bucket, PLURAL,
     createProject, listProjects, deleteProject, ensureProject, reconcileAutoProjects,
     duplicateProjectGroups, mergeProjects,
     currentProject, setCurrentProject, getAllIn, PROJECT_SCOPED,
