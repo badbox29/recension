@@ -996,7 +996,13 @@ async function renderTree() {
     moveWithUndo('scene', id, { parentId: null, index: 999 }, 'Moved to Unplaced'));
   toc.append(addUnplaced);
 
-  $('rail-total').textContent = `${App.tree.totalWords.toLocaleString()} words`;
+  const total = App.tree.totalWords;
+  $('rail-total').textContent = `${total.toLocaleString()} words`;
+  // Baseline first, so the very first render of a new day records the
+  // starting point rather than counting that day's work as zero.
+  noteDailyBaseline(total).then(() => sessionWords(total)).then(n => {
+    if (n) $('rail-total').textContent = `${total.toLocaleString()} words · +${n.toLocaleString()} today`;
+  });
 }
 
 function addLink(label, className, onClick) {
@@ -6069,6 +6075,287 @@ function firstDifference(a, b, width = 60) {
          b.slice(from, Math.min(b.length, i + width / 2)).replace(/\n/g, ' ') + '…';
 }
 
+// ══ Session count ══════════════════════════════════════════════════
+//
+// "1,240 words today" is the most motivating number a writing tool
+// has, and the cheapest — every scene already carries a word count.
+//
+// The baseline lives on the PROJECT record, not in localStorage, so a
+// morning at work and an evening at home add up to one day's writing
+// rather than two separate figures that each look disappointing.
+//
+// Deliberately not a goal system. A target you miss is a worse
+// companion than no target, and the number on its own is enough.
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+async function wordLog() {
+  const id = RecordStore.currentProject();
+  const rec = id && await RecordStore.get('project', id);
+  return rec?.wordLog || {};
+}
+
+/**
+ * noteDailyBaseline(total) — remember where the day started.
+ *
+ * Written once per day, the first time the app sees that date. Today's
+ * figure is then simply the difference, which needs no event log and
+ * survives editing the same scene twenty times.
+ */
+async function noteDailyBaseline(total) {
+  const id = RecordStore.currentProject();
+  if (!id) return;
+  const rec = await RecordStore.get('project', id);
+  if (!rec) return;
+
+  const log = { ...(rec.wordLog || {}) };
+  const key = today();
+  if (log[key] !== undefined) return;
+
+  log[key] = total;
+  // A month is enough to show a week and notice a pattern; keeping
+  // every day for ever would bloat a record that syncs constantly.
+  const keep = Object.keys(log).sort().slice(-31);
+  const trimmed = {};
+  for (const k of keep) trimmed[k] = log[k];
+
+  await RecordStore.put('project', id, { ...rec, wordLog: trimmed });
+}
+
+async function sessionWords(total) {
+  const log = await wordLog();
+  const base = log[today()];
+  if (base === undefined) return null;
+  // Deleting a scene can make this negative, which is true but not
+  // useful. Nobody wants to be told they wrote minus four hundred.
+  return Math.max(0, total - base);
+}
+
+/**
+ * recentDays(total) — the last seven days, for the check report.
+ *
+ * Each day's figure is the next day's baseline minus its own; today's
+ * is measured against the live total.
+ */
+async function recentDays(total) {
+  const log = await wordLog();
+  const days = Object.keys(log).sort().slice(-8);
+  const out = [];
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i];
+    const next = days[i + 1];
+    const end = next ? log[next] : total;
+    out.push({ day, words: Math.max(0, end - log[day]) });
+  }
+  return out.slice(-7);
+}
+
+// ══ Manuscript check ═══════════════════════════════════════════════
+//
+// Everything the app can notice, in one read-only pass. The fixers
+// each needed running deliberately and scoping individually, which
+// means in practice you run none of them — so this finds everything
+// at once and leaves every decision to you.
+//
+// Nothing here is a rule about writing. They are all mechanical facts
+// the app happens to be able to see: a quote that doesn't close, a
+// link that matches no card, a scene with no synopsis. Anything that
+// amounts to an opinion about prose is deliberately absent.
+
+async function checkManuscript() {
+  await flushActiveScene();
+  await flushActiveCard();
+  await flushActiveEvent();
+
+  App.tree = await RecordStore.getTree();
+  const scenes = scenesInScope(defaultReadScope());
+  const [graph, cards, events, beats] = await Promise.all([
+    RecordStore.linkGraph(),
+    RecordStore.getAllIn('card'),
+    RecordStore.getAllIn('event'),
+    RecordStore.getAllIn('beat'),
+  ]);
+
+  const groups = [];
+  const add = (key, title, note, items) => {
+    if (items.length) groups.push({ key, title, note, items });
+  };
+
+  // ── Typography ──
+  const quoteScenes = [], spaceScenes = [], balance = [];
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    const body = rec.body || '';
+
+    const q = Quotes.curlText(body);
+    if (q.changes) quoteScenes.push({
+      label: rec.title || 'Untitled scene',
+      detail: `${q.changes} character${q.changes === 1 ? '' : 's'}`,
+      go: () => openScene(rec.id),
+    });
+
+    const sp = Quotes.tidySpacing(body);
+    if (sp.changes) spaceScenes.push({
+      label: rec.title || 'Untitled scene',
+      detail: `${sp.changes} to tidy`,
+      go: () => openScene(rec.id),
+    });
+
+    for (const f of Quotes.checkQuotes(Quotes.curlText(body).text)) {
+      balance.push({
+        label: rec.title || 'Untitled scene',
+        detail: `line ${f.line} — ${FLAG_LABEL[f.kind] || f.kind}`,
+        sample: f.near,
+        go: () => openScene(rec.id),
+      });
+    }
+  }
+
+  add('quotes', 'Quotes to straighten',
+      'Straight quotes, or ones curling the wrong way. Fix quotes handles these.',
+      quoteScenes);
+  add('spacing', 'Spacing to tidy',
+      'Double spaces, stray trailing spaces, non-breaking spaces. Tidy spacing handles these.',
+      spaceScenes);
+  add('balance', 'Quotes that don\u2019t balance',
+      'Dialogue carried across a paragraph break is not counted \u2014 these are ' +
+      'genuinely unclosed, or close something that never opened.',
+      balance);
+
+  // ── Links ──
+  const unknown = [];
+  for (const [target, sceneIds] of graph.unknown) {
+    unknown.push({
+      label: `[[${target}]]`,
+      detail: `${sceneIds.length} scene${sceneIds.length === 1 ? '' : 's'} \u2014 no card matches`,
+      go: () => { railSection('manuscript'); openScene(sceneIds[0]); },
+    });
+  }
+  add('links', 'Links that match no card',
+      'Usually a typo, a renamed card, or somebody not written up yet. ' +
+      'Adding the written form to the card\u2019s Also known as fixes them all at once.',
+      unknown);
+
+  // ── Scenes ──
+  const empty = [], noSynopsis = [], unplanned = [];
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    if (!(rec.body || '').trim()) {
+      empty.push({ label: rec.title || 'Untitled scene', detail: 'no text',
+                   go: () => openScene(rec.id) });
+    } else if (!(rec.synopsis || '').trim()) {
+      noSynopsis.push({ label: rec.title || 'Untitled scene', detail: 'no synopsis',
+                        go: () => openScene(rec.id) });
+    }
+    // Only worth saying if you are using the method at all.
+    if (Object.keys(beats).length && !rec.beatId && (rec.body || '').trim()) {
+      unplanned.push({ label: rec.title || 'Untitled scene', detail: 'not tied to a beat',
+                       go: () => openScene(rec.id) });
+    }
+  }
+  add('empty', 'Scenes with no text', 'Placeholders, or something you meant to come back to.', empty);
+  add('synopsis', 'Scenes with no synopsis',
+      'The synopsis is what the board, the grid and step 9 read. Without it a ' +
+      'scene is only findable by opening it.', noSynopsis);
+  add('unplanned', 'Scenes outside the plan',
+      'Sometimes exactly right \u2014 the book found something the plan didn\u2019t.',
+      unplanned);
+
+  // ── Cards and events ──
+  const orphanCards = Object.values(cards)
+    .filter(c => !(graph.byCard[c.id] || []).length)
+    .map(c => ({ label: c.name || 'Untitled', detail: c.cardType,
+                 go: () => { railSection('cards'); openCard(c.id); } }));
+  add('cards', 'Cards nothing links to',
+      'Written up but never referenced in the prose. Fine for research; ' +
+      'worth a look for a character.', orphanCards);
+
+  const undated = Object.values(events)
+    .filter(e => !(e.start || '').trim())
+    .map(e => ({ label: e.title || 'Untitled event', detail: 'no date',
+                 go: () => { railSection('events'); openEvent(e.id); } }));
+  add('events', 'Events with no date',
+      'An undated event can\u2019t appear on the timeline.', undated);
+
+  showHealthReport(groups, scenes);
+}
+
+function showHealthReport(groups, scenes) {
+  const overlay = el('div', 'modal-overlay');
+  const modal = el('div', 'modal modal-wide');
+  const head = el('div', 'modal-header');
+  head.append(el('h2', 'modal-title', 'Manuscript check'));
+  const close = el('button', 'icon-btn', '\u00D7');
+  close.addEventListener('click', () => overlay.remove());
+  head.append(close);
+
+  const body = el('div', 'modal-body');
+
+  const words = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+
+  body.append(el('p', 'note',
+    `${words.toLocaleString()} words in ${scenes.length} scene${scenes.length === 1 ? '' : 's'}. ` +
+    (total ? `${total} thing${total === 1 ? '' : 's'} worth a look.`
+           : 'Nothing to flag.')));
+
+  // The week, before the faults. It is the part you will want to see.
+  const weekBox = el('div', 'hc-week');
+  body.append(weekBox);
+  recentDays(words).then(days => {
+    if (!days.length) return;
+    const max = Math.max(1, ...days.map(d => d.words));
+    for (const d of days) {
+      const col = el('div', 'hc-day');
+      const bar = el('div', 'hc-bar');
+      bar.style.height = `${Math.round((d.words / max) * 100)}%`;
+      bar.title = `${d.words.toLocaleString()} words`;
+      col.append(bar);
+      col.append(el('span', 'hc-dayname',
+        new Date(d.day + 'T12:00').toLocaleDateString(undefined, { weekday: 'narrow' })));
+      col.append(el('span', 'hc-daynum', d.words ? String(d.words) : '\u00B7'));
+      weekBox.append(col);
+    }
+  });
+
+  for (const g of groups) {
+    const det = el('details', 'hc-group');
+    // Typography is mechanical and safe to collapse; the rest wants
+    // reading, so it opens.
+    det.open = !['quotes', 'spacing'].includes(g.key);
+
+    const sum = el('summary');
+    sum.append(el('span', 'hc-title', g.title));
+    sum.append(el('span', 'hc-count', String(g.items.length)));
+    det.append(sum);
+
+    det.append(el('p', 'hc-note', g.note));
+
+    for (const item of g.items.slice(0, 50)) {
+      const row = el('button', 'hc-item');
+      row.append(el('span', 'hc-label', item.label));
+      row.append(el('span', 'hc-detail', item.detail || ''));
+      if (item.sample) row.append(el('span', 'q-sample', item.sample));
+      row.addEventListener('click', () => { overlay.remove(); item.go(); });
+      det.append(row);
+    }
+    if (g.items.length > 50) {
+      det.append(el('p', 'hc-note', `\u2026and ${g.items.length - 50} more.`));
+    }
+    body.append(det);
+  }
+
+  modal.append(head, body);
+  overlay.append(modal);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
 // ══ Tidy spacing ═══════════════════════════════════════════════════
 //
 // Separate from Fix Quotes on purpose. Both repair the same kind of
@@ -6975,6 +7262,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('set-quotes').addEventListener('change', e => {
     applyTypography({ ...App.typography, smartQuotes: e.target.checked });
   });
+  $('btn-check').addEventListener('click', () => checkManuscript()
+    .catch(e => { console.error(e); showToast('Check failed — see the console.'); }));
   $('btn-tidy-spacing').addEventListener('click', () => tidySpacing()
     .catch(e => { console.error(e); showToast('Could not check spacing — see the console.'); }));
   $('btn-fix-quotes').addEventListener('click', () => fixQuotes()
