@@ -4795,6 +4795,32 @@ function describeBackup(data) {
   };
 }
 
+/**
+ * offerClaim() — finish a restore by making it authoritative.
+ *
+ * Asked, never assumed. Overwriting every other device is the right
+ * answer after a restore and the wrong answer at any other time, and
+ * only the person who just restored knows which this is.
+ */
+async function offerClaim() {
+  const pick = await askChoice(
+    'This copy has been restored from a backup, but its records carry their ' +
+    'original dates \u2014 so your other devices still hold whatever was there ' +
+    'before, and it will come back on the next sync. Make this copy the one ' +
+    'that wins?',
+    [{ label: 'Yes \u2014 replace what is on my other devices', value: 'claim' }]);
+  if (pick !== 'claim') return;
+
+  showToast('Publishing this copy\u2026');
+  const n = await RecordStore.claimAsCurrent();
+  const r = await Sync.pushAll({ force: true });
+  await renderTree();
+  refreshSyncState();
+  showToast(r.ok
+    ? `${n} records published. Your other devices will pick this up.`
+    : 'Published locally, but the upload did not finish \u2014 press Sync now.', 9000);
+}
+
 async function runImport(file) {
   let data;
   try {
@@ -4880,6 +4906,16 @@ async function runImport(file) {
   if (stats.added)   parts.push(`${stats.added} added`);
   if (stats.skipped) parts.push(`${stats.skipped} already here, left alone`);
   showToast(parts.length ? `Imported: ${parts.join(', ')}.` : 'Nothing to import.', 6000);
+
+  // A Replace is a restore, and a restore has a second half. The
+  // records keep their original timestamps — correctly, since this is
+  // not new writing — which means they lose every reconciliation
+  // against whatever is already on the worker, including the mess
+  // being restored away from. Without this the restore is undone by
+  // the next sync.
+  if (mode === 'replace' && stats.added && !Auth.isGuest() && App.data.workerUrl) {
+    setTimeout(() => offerClaim(), 800);
+  }
 }
 
 // ══ Timeline ═══════════════════════════════════════════════════════
@@ -7406,6 +7442,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     .catch(e => { console.error(e); showToast('Compile failed - see the console.'); }));
   $('btn-persist').addEventListener('click', () => requestPersistence({ force: true }));
   $('btn-import').addEventListener('click', () => $('import-file').click());
+  $('btn-claim').addEventListener('click', () => offerClaim()
+    .catch(e => { console.error(e); showToast('Could not publish — see the console.'); }));
   $('import-file').addEventListener('change', async e => {
     const file = e.target.files?.[0];
     e.target.value = '';           // so the same file can be picked twice

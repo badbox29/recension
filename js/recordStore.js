@@ -1112,6 +1112,38 @@ const RecordStore = (() => {
     return tx(IMAGES, 'readwrite', st => st.delete(cardId));
   }
 
+  /**
+   * claimAsCurrent() — make this device's copy the one that wins.
+   *
+   * Restoring a backup writes records verbatim, keeping their original
+   * updatedAt — which is right, because a restore is not new writing.
+   * But it means the restored copy LOSES every reconciliation against
+   * whatever is on the server, including the very mess you are
+   * restoring away from. The restore succeeds locally and is undone on
+   * the next sync.
+   *
+   * So there has to be one deliberate way to say: this copy, not that
+   * one. It restamps every record to now, which is a lie about when
+   * the words were written and an honest statement about which copy is
+   * authoritative — and it only ever happens because somebody asked.
+   *
+   * Returns how many records were claimed.
+   */
+  async function claimAsCurrent() {
+    const now = Date.now();
+    let n = 0;
+    for (const type of TYPES) {
+      for (const rec of Object.values(await getAll(type))) {
+        const ok = await _write(type, rec.id, { ...rec, updatedAt: now });
+        if (!ok) continue;
+        if (typeof Sync !== 'undefined') Sync.markDirty(type, rec.id);
+        n++;
+      }
+    }
+    invalidateCards();
+    return n;
+  }
+
   // ══ Search ═══════════════════════════════════════════════════════
   //
   // One pass over everything: scene titles, synopses and prose, card
@@ -1426,7 +1458,7 @@ const RecordStore = (() => {
     search,
     // Wiring
     syncInterface,
-    importRecords,
+    importRecords, claimAsCurrent,
     clear,
   };
 })();

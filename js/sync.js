@@ -375,7 +375,7 @@ const Sync = (() => {
    *
    * Only confirmed ids are cleared from the dirty set (invariant 3).
    */
-  async function flush() {
+  async function flush({ force = false } = {}) {
     if (_flushing || C.isGuest() || !base()) return { ok: false, skipped: true };
     _flushing = true;
     C.onStatus('syncing');
@@ -413,7 +413,7 @@ const Sync = (() => {
         if (!rec) { deletes.push(key); continue; }
 
         const theirs = remote[key];
-        if (theirs && theirs > (rec.updatedAt || 0)) {
+        if (!force && theirs && theirs > (rec.updatedAt || 0)) {
           // Someone else got there later. Take their copy rather than
           // overwrite it, and stop claiming this record is ours to push.
           const r = await withAuthRetry(() => request(
@@ -866,12 +866,16 @@ const Sync = (() => {
      * after a failed write — the server silently stays behind and the UI
      * has no way to tell. This re-states everything.
      */
-    async pushAll() {
+    async pushAll({ force = false } = {}) {
       const index = await C.getLocalIndex();
       const keys = Object.keys(index);
       await txWrite('dirty', st => { for (const k of keys) st.put(Date.now(), k); });
       await markAccountDirty();
-      return flush();
+      // force skips the server-freshness check. Only a restore uses
+      // it, and only because the user has explicitly said this copy
+      // is the one that counts — the guard exists to stop a STALE
+      // device asserting itself, not a deliberate one.
+      return flush({ force });
     },
 
     /**
