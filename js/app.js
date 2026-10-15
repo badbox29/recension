@@ -284,6 +284,7 @@ function renderMarkdown(md, index) {
   return blocks.map(block => {
     const b = block.trim();
     if (!b) return '';
+    if (/^#$/.test(b)) return '<p class="scene-break">#</p>';
     const h = b.match(/^(#{1,3})\s+(.*)$/s);
     if (h) return `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`;
     if (/^>\s?/.test(b)) return `<blockquote>${inline(b.replace(/^>\s?/gm, ''))}</blockquote>`;
@@ -2062,7 +2063,12 @@ async function chooseWork(verb) {
  * count. Roughly Shunn format, which is what agents and editors expect
  * and nobody is ever annoyed to receive.
  */
-function titlePage(title, words) {
+function titlePage(title, words, flavour = 'md') {
+  // Two trailing spaces are the markdown hard break, and they are
+  // invisible — any editor, mail client or linter that trims trailing
+  // whitespace silently collapses an address block into one line. A
+  // backslash means the same thing to CommonMark and can be seen.
+  const brk = flavour === 'md' ? '\\\n' : '\n';
   const a = App.data.author || {};
   const legal  = [a.first, a.middle, a.last].filter(Boolean).join(' ');
   const byline = authorByline();
@@ -2080,7 +2086,7 @@ function titlePage(title, words) {
   }
 
   const out = [];
-  if (contact.length) out.push(contact.join('  \n'), '');
+  if (contact.length) out.push(contact.join(brk), '');
   out.push('', '', `# ${title}`);
   if (byline) out.push('', `by ${byline}`);
   // Manuscript word counts are conventionally rounded, not exact.
@@ -2091,10 +2097,36 @@ function titlePage(title, words) {
 }
 
 // compileText() — the whole manuscript as one markdown document.
-async function compileText(scope = { kind: 'all', id: null }) {
+/**
+ * SCENE_BREAK — a line holding nothing but a hash.
+ *
+ * In manuscript convention that's a scene break, centred, with normal
+ * spacing. In Markdown it is an EMPTY H1 — which renders as a blank
+ * gap, or worse, as an untitled chapter in a generated table of
+ * contents. Every exporter has to recognise it before it reaches a
+ * markdown parser.
+ *
+ * A real heading always has text after the hash, so "# Title" and
+ * "## Chapter 1" are untouched.
+ */
+const SCENE_BREAK = /^[ \t]*#[ \t]*$/;
+
+/**
+ * compileText(scope, { flavour })
+ *
+ *   'md'   the scene break is emitted as \# — an escaped hash, which
+ *          every CommonMark parser renders as a literal paragraph and
+ *          no parser reads as a heading. Raw HTML would let us centre
+ *          it, but pandoc drops raw HTML when converting to docx, and
+ *          losing the break entirely is worse than losing its
+ *          alignment. Our own .docx and .epub centre it properly.
+ *   'txt'  a bare hash; there is no markdown to confuse.
+ */
+async function compileText(scope = { kind: 'all', id: null }, { flavour = 'md' } = {}) {
   const scenes = scenesInScope(scope);
   const words  = scenes.reduce((n, s) => n + (s.wordCount || 0), 0);
-  const parts  = [titlePage(manuscriptTitle(scope), words)];
+  const brk = flavour === 'md' ? '\\#' : '#';
+  const parts  = [titlePage(manuscriptTitle(scope), words, flavour)];
 
   let lastChapter;
   let first = true;
@@ -2106,14 +2138,17 @@ async function compileText(scope = { kind: 'all', id: null }) {
       lastChapter = meta.chapterId;
       if (meta.chapterTitle) parts.push(`\n## ${meta.chapterTitle}\n`);
     } else if (!first) {
-      // Scene break inside a chapter. A centred hash is the conventional
-      // typescript mark for a break and survives any converter.
-      parts.push('\n#\n');
+      parts.push(`\n${brk}\n`);
     }
     first = false;
-    // Links are an authoring aid, not part of the manuscript. A reader
-    // or an agent should get the prose, not [[Angel Six|Angel]].
-    parts.push(stripWikilinks((rec.body || '').trim()));
+
+    // A hash the author typed inside the prose means the same thing
+    // and needs the same treatment — it reaches the parser either way.
+    const body = stripWikilinks((rec.body || '').trim())
+      .split('\n')
+      .map(l => SCENE_BREAK.test(l) ? brk : l)
+      .join('\n');
+    parts.push(body);
   }
   return parts.join('\n') + '\n';
 }
@@ -2235,6 +2270,12 @@ async function buildDocx(scope) {
     for (const block of text.split(/\n{2,}/)) {
       const t = block.trim();
       if (!t) continue;
+      // A lone hash the author typed is a scene break: centred, no
+      // indent, never a heading.
+      if (SCENE_BREAK.test(t)) {
+        body.push(para('#', { align: 'center', indent: 0 }));
+        continue;
+      }
       // A markdown heading inside a scene becomes a centred line —
       // manuscripts have no h2.
       const h = t.match(/^#{1,6}\s+(.*)$/s);
@@ -2332,6 +2373,7 @@ async function buildEpub(scope) {
     for (const block of text.split(/\n{2,}/)) {
       const t = block.trim();
       if (!t) continue;
+      if (SCENE_BREAK.test(t)) { current.html.push('<p class="break">#</p>'); continue; }
       const h = t.match(/^#{1,6}\s+(.*)$/s);
       if (h) { current.html.push(`<h2>${xmlEsc(h[1])}</h2>`); continue; }
       const inline = xmlEsc(t.replace(/\n/g, ' '))
@@ -2401,7 +2443,7 @@ ${manifest}</manifest>
 // ── Plain text ─────────────────────────────────────────────────────
 
 async function buildPlainText(scope) {
-  const md = await compileText(scope);
+  const md = await compileText(scope, { flavour: 'txt' });
   return stripWikilinks(md)
     .replace(/^#{1,6}\s+/gm, '')       // headings become plain lines
     .replace(/(\*\*|__)(.+?)\1/g, '$2')
@@ -5920,7 +5962,14 @@ async function fixQuotes() {
       plan.push({ id: rec.id, title: rec.title, before: rec.body, after: r.text, n: r.changes });
       totalChanges += r.changes;
     }
+    // Ambiguities found while converting…
     for (const f of r.flags) allFlags.push({ ...f, scene: rec.title || 'Untitled' });
+    // …and quotes that don't balance, checked against the FIXED text,
+    // since an unbalanced pair in the original is often just a
+    // straight quote that hadn't been curled yet.
+    for (const f of Quotes.checkQuotes(r.text)) {
+      allFlags.push({ ...f, scene: rec.title || 'Untitled' });
+    }
   }
 
   showQuoteReport(plan, totalChanges, allFlags);
@@ -5963,9 +6012,10 @@ function showQuoteReport(plan, totalChanges, flags) {
     body.append(el('h3', 'q-flag-head',
       `${flags.length} to look at yourself`));
     body.append(el('p', 'note',
-      'These are fixed with the likelier reading, but only you can be sure. ' +
-      'An apostrophe starting a word is either a nested quote or a dropped ' +
-      'letter, and they look identical.'));
+      'Not changed \u2014 these are questions about what you meant, which have ' +
+      'no single right answer. Dialogue that runs across a paragraph break is ' +
+      'not flagged: opening each paragraph and closing only at the end is ' +
+      'correct, and it is checked for.'));
     const fl = el('div', 'q-list');
     for (const f of flags.slice(0, 40)) {
       const row = el('div', 'q-flag');
@@ -5999,9 +6049,11 @@ function showQuoteReport(plan, totalChanges, flags) {
 }
 
 const FLAG_LABEL = {
-  'single-open': 'Nested quote, or a dropped letter?',
+  'single-open': 'A dropped letter, or a nested quote?',
   'lone-single': 'A single quote on its own',
-  'unclosed-double': 'A quote that never closes',
+  'unclosed-double': 'A quote that opens and never closes',
+  'stray-close': 'A closing quote with nothing open',
+  'unbalanced': 'Opening and closing quotes don\u2019t match',
 };
 
 async function applyQuoteFix(plan) {
