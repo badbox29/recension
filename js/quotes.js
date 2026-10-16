@@ -311,17 +311,20 @@ const Quotes = (() => {
    * catches the rest.
    */
   function typed(ch, before) {
-    if (ch === '"') {
-      return (before === '' || OPENS_AFTER.test(before)) ? LDQUO : RDQUO;
-    }
+    // Shares opensHere() with the fixer. It used to carry its own copy
+    // of the rule, and when the fixer's was rewritten this was left
+    // referring to something that no longer existed — which broke the
+    // double-quote key outright.
+    if (ch === '"') return opensHere(before) ? LDQUO : RDQUO;
+
     if (ch === "'") {
       // After a letter or digit it is an apostrophe or a closing
       // single — the same glyph either way, so this is always right.
-      if (WORD.test(before)) return RSQUO;
+      if (WORD.test(before.slice(-1))) return RSQUO;
       // At a word start it could be an elision or a nested quote, and
-      // what follows has not been typed. Opening is the commoner case
-      // mid-dialogue; Fix Quotes settles the rest.
-      return LSQUO;
+      // what follows has not been typed yet. Opening is the commoner
+      // case mid-dialogue; Fix Quotes settles the rest.
+      return opensHere(before) ? LSQUO : RSQUO;
     }
     return ch;
   }
