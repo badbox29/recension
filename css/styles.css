@@ -3158,3 +3158,57 @@ kbd {
   font-size: var(--t-xs);
   color: var(--ink-soft);
 }
+
+/* ══ Scene history ═════════════════════════════════════════════════ */
+
+.meta-actions { justify-content: flex-start; padding-top: 0.25rem; }
+#btn-history { font-size: var(--t-xs); padding: 0.1875rem 0.5rem; }
+
+.hist-list { margin-top: 0.75rem; }
+
+.hist-item {
+  border-top: 1px solid var(--rule-soft);
+  padding: 0.625rem 0;
+}
+.hist-when { display: flex; align-items: baseline; gap: 0.625rem; flex-wrap: wrap; }
+.hist-date { font-family: var(--prose); font-size: var(--t-sm); color: var(--ink); }
+.hist-delta {
+  font-family: var(--prose);
+  font-variant-numeric: oldstyle-nums;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+.hist-tag {
+  font-size: var(--t-xs);
+  color: var(--rubric);
+  border: 1px solid color-mix(in srgb, var(--rubric) 40%, transparent);
+  border-radius: 999px;
+  padding: 0 0.375rem;
+}
+.hist-actions { display: flex; gap: 0.375rem; margin-top: 0.375rem; }
+.hist-actions .ghost-btn { font-size: var(--t-xs); padding: 0.125rem 0.5rem; }
+
+/* The diff. Removed text struck through rather than hidden, because
+   what went is as much the question as what arrived. */
+.hist-diff {
+  font-family: var(--prose);
+  font-size: var(--t-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  margin-top: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--paper);
+  border-radius: 3px;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+.hist-diff del {
+  text-decoration: line-through;
+  color: var(--rubric);
+  background: color-mix(in srgb, var(--rubric) 10%, transparent);
+}
+.hist-diff ins {
+  text-decoration: none;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--c-location, #4C6B54) 18%, transparent);
+}
