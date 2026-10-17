@@ -6196,13 +6196,21 @@ async function wordLog() {
 }
 
 /**
- * noteDailyBaseline(total) — remember where the day started.
+ * recordDayTotal(total) — the HIGHEST total seen on this writing day.
  *
- * Written once per day, the first time the app sees that date. Today's
- * figure is then simply the difference, which needs no event log and
- * survives editing the same scene twenty times.
+ * The first version of this recorded the first total seen each day and
+ * treated it as the day's starting point. That is only correct if the
+ * first device to look is up to date — and it usually isn't. A phone
+ * opening at half past midnight, before syncing, wrote a stale figure
+ * as the baseline, and every device then reported a day's work that
+ * had actually happened the night before.
+ *
+ * Recording the day's END instead is self-correcting: a device that
+ * syncs later simply raises the figure, and today is measured against
+ * yesterday's final total rather than against a guess at today's
+ * first.
  */
-async function noteDailyBaseline(total) {
+async function recordDayTotal(total) {
   const id = RecordStore.currentProject();
   if (!id) return;
   const rec = await RecordStore.get('project', id);
@@ -6210,16 +6218,19 @@ async function noteDailyBaseline(total) {
 
   const log = { ...(rec.wordLog || {}) };
   const key = today();
-  if (log[key] !== undefined) return;
-
+  if ((log[key] || 0) >= total) return;      // nothing new to record
   log[key] = total;
-  // A month is enough to show a week and notice a pattern; keeping
-  // every day for ever would bloat a record that syncs constantly.
+
+  // A month shows a week and a pattern; keeping every day for ever
+  // would bloat a record that syncs constantly.
   const keep = Object.keys(log).sort().slice(-31);
   const trimmed = {};
   for (const k of keep) trimmed[k] = log[k];
 
-  await RecordStore.put('project', id, { ...rec, wordLog: trimmed });
+  // putMeta, not put: this is bookkeeping. Restamping the project on
+  // every render would make it the newest record in the account and
+  // churn the sync for nothing.
+  await RecordStore.putMeta('project', id, { ...rec, wordLog: trimmed });
 }
 
 /**
@@ -6237,7 +6248,7 @@ async function paintWordTotals(total) {
 
   // Baseline first, so the first look on a new day records the
   // starting point rather than counting the day's work as zero.
-  await noteDailyBaseline(total);
+  await recordDayTotal(total);
   const n = await sessionWords(total);
   if (n) el_.textContent = `${total.toLocaleString()} words · +${n.toLocaleString()} today`;
 
@@ -6249,12 +6260,22 @@ async function paintWordTotals(total) {
   }, Math.min(msUntilDayRolls(), 2 ** 31 - 1));
 }
 
+/**
+ * sessionWords(total) — words written today.
+ *
+ * Measured against the last recorded day BEFORE today, so it does not
+ * depend on anything having been recorded correctly today. Returns
+ * null when there is no earlier day to measure from — the first day
+ * of a project has nothing to compare against, and claiming the whole
+ * manuscript as today's work would be a lie.
+ */
 async function sessionWords(total) {
   const log = await wordLog();
-  const base = log[today()];
-  if (base === undefined) return null;
-  // Deleting a scene can make this negative, which is true but not
-  // useful. Nobody wants to be told they wrote minus four hundred.
+  const key = today();
+  const earlier = Object.keys(log).filter(k => k < key).sort();
+  if (!earlier.length) return null;
+  const base = log[earlier[earlier.length - 1]];
+  // A deletion can make this negative, which is true but not useful.
   return Math.max(0, total - base);
 }
 
@@ -6264,15 +6285,22 @@ async function sessionWords(total) {
  * Each day's figure is the next day's baseline minus its own; today's
  * is measured against the live total.
  */
+/**
+ * recentDays(total) — the last seven writing days.
+ *
+ * Each day's figure is its own end total minus the previous day's, so
+ * a day with no entry simply doesn't appear rather than showing a
+ * wrong number.
+ */
 async function recentDays(total) {
-  const log = await wordLog();
-  const days = Object.keys(log).sort().slice(-8);
+  const log = { ...(await wordLog()) };
+  const key = today();
+  log[key] = Math.max(log[key] || 0, total);
+
+  const days = Object.keys(log).sort();
   const out = [];
-  for (let i = 0; i < days.length; i++) {
-    const day = days[i];
-    const next = days[i + 1];
-    const end = next ? log[next] : total;
-    out.push({ day, words: Math.max(0, end - log[day]) });
+  for (let i = 1; i < days.length; i++) {
+    out.push({ day: days[i], words: Math.max(0, log[days[i]] - log[days[i - 1]]) });
   }
   return out.slice(-7);
 }
