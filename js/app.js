@@ -996,13 +996,7 @@ async function renderTree() {
     moveWithUndo('scene', id, { parentId: null, index: 999 }, 'Moved to Unplaced'));
   toc.append(addUnplaced);
 
-  const total = App.tree.totalWords;
-  $('rail-total').textContent = `${total.toLocaleString()} words`;
-  // Baseline first, so the very first render of a new day records the
-  // starting point rather than counting that day's work as zero.
-  noteDailyBaseline(total).then(() => sessionWords(total)).then(n => {
-    if (n) $('rail-total').textContent = `${total.toLocaleString()} words · +${n.toLocaleString()} today`;
-  });
+  paintWordTotals(App.tree.totalWords);
 }
 
 function addLink(label, className, onClick) {
@@ -6174,9 +6168,25 @@ function firstDifference(a, b, width = 60) {
 // Deliberately not a goal system. A target you miss is a worse
 // companion than no target, and the number on its own is enough.
 
-function today() {
-  const d = new Date();
+// A writing day starts at 4am, not midnight. A session that runs to
+// one in the morning is one night's work, and splitting it across two
+// dates turns a good night into two disappointing ones.
+const DAY_STARTS_AT = 4;
+
+function today(when = Date.now()) {
+  const d = new Date(when);
+  if (d.getHours() < DAY_STARTS_AT) d.setDate(d.getDate() - 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// When the current writing day ends, so the figure can be refreshed
+// rather than sitting there stale on a tab left open overnight.
+function msUntilDayRolls() {
+  const d = new Date();
+  const next = new Date(d);
+  next.setHours(DAY_STARTS_AT, 0, 5, 0);
+  if (next <= d) next.setDate(next.getDate() + 1);
+  return next - d;
 }
 
 async function wordLog() {
@@ -6210,6 +6220,33 @@ async function noteDailyBaseline(total) {
   for (const k of keep) trimmed[k] = log[k];
 
   await RecordStore.put('project', id, { ...rec, wordLog: trimmed });
+}
+
+/**
+ * paintWordTotals(total) — the rail footer.
+ *
+ * Separated out because it has to be callable without re-reading the
+ * tree: the figure was written once per render, so a tab left open
+ * overnight kept showing yesterday's total as though it were today's.
+ */
+let _dayTimer = null;
+async function paintWordTotals(total) {
+  const el_ = $('rail-total');
+  if (!el_) return;
+  el_.textContent = `${total.toLocaleString()} words`;
+
+  // Baseline first, so the first look on a new day records the
+  // starting point rather than counting the day's work as zero.
+  await noteDailyBaseline(total);
+  const n = await sessionWords(total);
+  if (n) el_.textContent = `${total.toLocaleString()} words · +${n.toLocaleString()} today`;
+
+  // Re-run when the writing day turns over, so the count resets on
+  // its own rather than when you next happen to edit something.
+  clearTimeout(_dayTimer);
+  _dayTimer = setTimeout(() => {
+    if (App.tree) paintWordTotals(App.tree.totalWords);
+  }, Math.min(msUntilDayRolls(), 2 ** 31 - 1));
 }
 
 async function sessionWords(total) {
@@ -6265,6 +6302,52 @@ async function snapshotBeforeBulk(plan, reason) {
   for (const p of plan) {
     await RecordStore.saveSnapshot(p.id, p.before, { reason, force: true });
   }
+}
+
+/**
+ * markVersion() — a line in the sand across the whole book.
+ *
+ * Not "create some snapshots". Snapshotting everything right now
+ * makes copies of what you already have, and you cannot restore to
+ * today from today — the value only appears tomorrow, once today is
+ * somewhere to come back to.
+ *
+ * So it is framed as marking where the manuscript IS, before a
+ * revision pass. The label is the point: "before the Act Two rewrite"
+ * is worth finding in a list, while a bare timestamp is something you
+ * scroll past.
+ */
+async function markVersion() {
+  await flushActiveScene();
+
+  const label = await askName('Mark this version',
+    'Before the Act Two rewrite');
+  if (!label) return;
+
+  App.tree = await RecordStore.getTree();
+  const scenes = scenesInScope(defaultReadScope());
+
+  let kept = 0, already = 0;
+  for (const meta of scenes) {
+    const rec = await RecordStore.get('scene', meta.id);
+    if (!rec) continue;
+    // A scene untouched since its last version already has an
+    // identical copy. Another adds nothing and crowds the list.
+    const saved = await RecordStore.saveSnapshot(rec.id, rec.body || '',
+      { reason: label, force: true });
+    saved ? kept++ : already++;
+  }
+
+  if (App.activeScene) {
+    RecordStore.snapshotCount(App.activeScene.id).then(n => {
+      $('btn-history').textContent = n ? `History · ${n}` : 'History';
+    });
+  }
+
+  showToast(kept
+    ? `Marked “${label}” across ${kept} scene${kept === 1 ? '' : 's'}` +
+      (already ? `. ${already} already had an identical version.` : '.')
+    : 'Every scene already had an identical version — nothing to mark.', 8000);
 }
 
 async function openHistory() {
@@ -7512,6 +7595,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     $(f).addEventListener('input', scheduleSave);
   }
   $('scene-status').addEventListener('change', () => flushActiveScene());
+  $('btn-mark-version').addEventListener('click', () => markVersion()
+    .catch(e => { console.error(e); showToast('Could not mark a version — see the console.'); }));
   $('btn-history').addEventListener('click', () => openHistory()
     .catch(e => { console.error(e); showToast('Could not open history — see the console.'); }));
 
@@ -7694,6 +7779,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       e.preventDefault();
       flushActiveScene().then(() => Sync.flush());
       showToast('Saved.');
+    }
+  });
+
+  // Coming back to a tab that was open overnight is the exact case
+  // that showed a stale figure.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && App.tree) {
+      paintWordTotals(App.tree.totalWords);
     }
   });
 
