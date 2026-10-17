@@ -101,10 +101,11 @@
 const RecordStore = (() => {
 
   const DB_NAME    = 'recension';
-  const DB_VERSION = 2;   // 2: added the images store
+  const DB_VERSION = 3;   // 2: images store · 3: scene snapshots
   const RECORDS    = 'records';
   const INDEX      = 'index';
   const IMAGES     = 'images';
+  const SNAPS      = 'snaps';
 
   const TYPES = ['project', 'book', 'part', 'chapter', 'scene', 'card', 'event', 'beat'];
 
@@ -142,6 +143,9 @@ const RecordStore = (() => {
         // Blobs, keyed by card id. Separate from records so a portrait
         // is never serialized alongside JSON that's read constantly.
         if (!db.objectStoreNames.contains(IMAGES))  db.createObjectStore(IMAGES);
+        // Keyed `sceneId:timestamp`, so a scene's history is a prefix
+        // scan and nothing needs an index.
+        if (!db.objectStoreNames.contains(SNAPS))   db.createObjectStore(SNAPS);
       };
       req.onsuccess = e => {
         const db = e.target.result;
@@ -183,9 +187,18 @@ const RecordStore = (() => {
       t.onabort    = () => { console.warn('[RecordStore] tx aborted:', t.error); resolve(false); };
       t.onerror    = () => { console.warn('[RecordStore] tx error:', t.error); resolve(false); };
       try {
-        const stores = {};
-        for (const n of [].concat(storeNames)) stores[n] = t.objectStore(n);
-        fn(stores);
+        // One name in, one store out; several names in, an object
+        // keyed by name. Callers given a single store were writing
+        // `st.put(...)` against the keyed object, which threw into the
+        // catch below and resolved false — silently. Card images never
+        // saved once because of it.
+        if (Array.isArray(storeNames)) {
+          const stores = {};
+          for (const n of storeNames) stores[n] = t.objectStore(n);
+          fn(stores);
+        } else {
+          fn(t.objectStore(storeNames));
+        }
       } catch (e) { console.warn('[RecordStore] tx body failed:', e); resolve(false); }
     });
   }
@@ -1144,6 +1157,115 @@ const RecordStore = (() => {
     return n;
   }
 
+  // ══ Snapshots ════════════════════════════════════════════════════
+  //
+  // A scene's earlier versions, kept locally. Not a backup and not
+  // sync — those protect against losing the file and losing a device.
+  // This protects against the thing neither can: rewriting a scene
+  // and preferring what was there before.
+  //
+  // LOCAL ONLY, deliberately. Snapshots are bulky, write-once and
+  // almost never wanted on another machine; syncing them would
+  // multiply traffic for something you will read on the device that
+  // made it, if at all. The backup zip remains the thing that leaves.
+
+  const SNAP_KEEP_ALL_DAYS = 7;    // every snapshot, for a week
+  const SNAP_KEEP_WEEKS = 8;       // then one a week, for two months
+
+  function snapKey(sceneId, at) { return `${sceneId}:${at}`; }
+
+  /**
+   * saveSnapshot(sceneId, body, { reason }) — keep a version.
+   *
+   * Returns false when nothing was kept, which is most calls: an
+   * unchanged scene, or one snapshotted minutes ago, is not history.
+   */
+  async function saveSnapshot(sceneId, body, { reason = 'edit', force = false } = {}) {
+    if (!sceneId) return false;
+    const text = body || '';
+    const history = await snapshotsFor(sceneId);
+    const last = history[0];
+
+    if (last && last.body === text) return false;        // nothing changed
+
+    if (!force && last) {
+      const minutes = (Date.now() - last.at) / 60000;
+      // A snapshot every few keystrokes is noise you'd have to scroll
+      // past to find the version you want. Ten minutes between
+      // automatic ones keeps the list readable.
+      if (minutes < 10) return false;
+      // And a trivial change is not a version.
+      if (Math.abs(text.length - (last.body || '').length) < 40 &&
+          reason === 'edit') return false;
+    }
+
+    const at = Date.now();
+    const ok = await tx(SNAPS, 'readwrite', st => st.put(
+      { sceneId, at, body: text, reason, words: countWords(text) },
+      snapKey(sceneId, at)));
+    if (ok) await pruneSnapshots(sceneId);
+    return ok;
+  }
+
+  // Newest first.
+  async function snapshotsFor(sceneId) {
+    const res = await read(SNAPS, async st => {
+      const [keys, vals] = await Promise.all([wrap(st.getAllKeys()), wrap(st.getAll())]);
+      return { keys: keys || [], vals: vals || [] };
+    });
+    if (!res) return [];
+    const out = [];
+    res.keys.forEach((k, i) => {
+      if (String(k).startsWith(`${sceneId}:`)) out.push(res.vals[i]);
+    });
+    return out.sort((a, b) => b.at - a.at);
+  }
+
+  /**
+   * pruneSnapshots(sceneId) — thin the history as it ages.
+   *
+   * Everything for a week, then one per week for two months. Bucketed
+   * by age and deterministic, so it never depends on when pruning
+   * happened to run.
+   */
+  async function pruneSnapshots(sceneId) {
+    const all = await snapshotsFor(sceneId);
+    const now = Date.now();
+    const day = 86400e3;
+    const keep = new Set();
+    const weeks = new Map();
+
+    for (const s of all) {
+      const age = (now - s.at) / day;
+      if (age <= SNAP_KEEP_ALL_DAYS) { keep.add(s.at); continue; }
+      const week = Math.floor(age / 7);
+      if (week > SNAP_KEEP_WEEKS) continue;
+      // Newest in each week-bucket wins; `all` is already newest-first.
+      if (!weeks.has(week)) { weeks.set(week, s.at); keep.add(s.at); }
+    }
+    // Manual ones are kept regardless — somebody asked for those.
+    for (const s of all) if (s.reason === 'manual') keep.add(s.at);
+
+    const drop = all.filter(s => !keep.has(s.at));
+    if (!drop.length) return 0;
+    await tx(SNAPS, 'readwrite', st => {
+      for (const s of drop) st.delete(snapKey(sceneId, s.at));
+    });
+    return drop.length;
+  }
+
+  async function deleteSnapshots(sceneId) {
+    const all = await snapshotsFor(sceneId);
+    if (!all.length) return;
+    return tx(SNAPS, 'readwrite', st => {
+      for (const s of all) st.delete(snapKey(sceneId, s.at));
+    });
+  }
+
+  async function snapshotCount(sceneId) {
+    return (await snapshotsFor(sceneId)).length;
+  }
+
   // ══ Search ═══════════════════════════════════════════════════════
   //
   // One pass over everything: scene titles, synopses and prose, card
@@ -1371,7 +1493,12 @@ const RecordStore = (() => {
     return remove('chapter', id);
   }
 
-  async function deleteScene(id) { return remove('scene', id); }
+  async function deleteScene(id) {
+    // The history of a scene that no longer exists is unreachable
+    // anyway, and keeping it would grow the store for ever.
+    await deleteSnapshots(id);
+    return remove('scene', id);
+  }
 
   /**
    * importRecords(records, { mode }) — restore from a backup.
@@ -1445,6 +1572,7 @@ const RecordStore = (() => {
     createProject, listProjects, deleteProject, ensureProject, reconcileAutoProjects,
     duplicateProjectGroups, mergeProjects,
     currentProject, setCurrentProject, getAllIn, PROJECT_SCOPED,
+    saveSnapshot, snapshotsFor, snapshotCount, pruneSnapshots, deleteSnapshots,
     createBook, createPart, createChapter, createScene, getTree, allChapters,
     deleteBook, deletePart, deleteChapter, deleteScene,
     // Cards

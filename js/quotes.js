@@ -476,3 +476,103 @@ const Quotes = (() => {
 })();
 
 if (typeof module !== 'undefined') module.exports = Quotes;
+
+/**
+ * ============================================================
+ * diff.js — word-level difference, for snapshot comparison
+ * ============================================================
+ *
+ * Lives here rather than in its own file because it is small and
+ * shares the same job: looking at two pieces of prose and saying what
+ * is different about them.
+ *
+ * Word-level, not character-level. A character diff of edited prose
+ * produces confetti — half-highlighted words that are harder to read
+ * than the original. A writer wants to see which WORDS changed.
+ */
+const Diff = (() => {
+
+  // Words and the whitespace between them, kept as separate tokens so
+  // the text can be reassembled exactly.
+  function tokenise(text) {
+    return (text || '').match(/\s+|[^\s]+/g) || [];
+  }
+
+  /**
+   * words(before, after) → [{ type, text }]
+   *
+   * type is 'same', 'added' or 'removed'.
+   *
+   * A straight longest-common-subsequence over tokens. Quadratic, and
+   * that is fine: this compares one scene against one earlier version
+   * of itself, so a few thousand tokens at most, on a gesture the
+   * reader initiated.
+   */
+  function words(before, after) {
+    const a = tokenise(before), b = tokenise(after);
+
+    // Trim the shared head and tail first. Edits to prose are almost
+    // always local, so this usually leaves a handful of tokens for the
+    // expensive part to chew on.
+    let head = 0;
+    while (head < a.length && head < b.length && a[head] === b[head]) head++;
+    let tail = 0;
+    while (tail < a.length - head && tail < b.length - head &&
+           a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+
+    const midA = a.slice(head, a.length - tail);
+    const midB = b.slice(head, b.length - tail);
+
+    const out = [];
+    const push = (type, text) => {
+      if (!text) return;
+      const last = out[out.length - 1];
+      if (last && last.type === type) last.text += text;
+      else out.push({ type, text });
+    };
+
+    push('same', a.slice(0, head).join(''));
+
+    // LCS table over the differing middle.
+    const n = midA.length, m = midB.length;
+    if (n && m) {
+      const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          lcs[i][j] = midA[i] === midB[j]
+            ? lcs[i + 1][j + 1] + 1
+            : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        }
+      }
+      let i = 0, j = 0;
+      while (i < n && j < m) {
+        if (midA[i] === midB[j]) { push('same', midA[i]); i++; j++; }
+        else if (lcs[i + 1][j] >= lcs[i][j + 1]) { push('removed', midA[i]); i++; }
+        else { push('added', midB[j]); j++; }
+      }
+      while (i < n) { push('removed', midA[i]); i++; }
+      while (j < m) { push('added', midB[j]); j++; }
+    } else {
+      push('removed', midA.join(''));
+      push('added', midB.join(''));
+    }
+
+    push('same', a.slice(a.length - tail).join(''));
+    return out;
+  }
+
+  // A one-line summary: how much moved, without reading the diff.
+  function summary(before, after) {
+    let added = 0, removed = 0;
+    for (const part of words(before, after)) {
+      const n = (part.text.match(/[^\s]+/g) || []).length;
+      if (part.type === 'added') added += n;
+      if (part.type === 'removed') removed += n;
+    }
+    return { added, removed };
+  }
+
+  return { words, summary, tokenise };
+})();
+
+if (typeof module !== 'undefined') module.exports.Diff = Diff;

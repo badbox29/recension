@@ -1646,7 +1646,13 @@ async function flushActiveScene() {
 // ── Opening scenes ─────────────────────────────────────────────────
 
 async function openScene(id) {
-  if (App.activeScene && App.activeScene.id !== id) await flushActiveScene();
+  if (App.activeScene && App.activeScene.id !== id) {
+    await flushActiveScene();
+    // Leaving a scene is the natural moment to keep a version: the
+    // work on it is finished for now, and saveSnapshot declines if
+    // nothing meaningful changed.
+    await snapshotScene(App.activeScene.id);
+  }
 
   const sc = await RecordStore.get('scene', id);
   if (!sc) { showToast('That scene is gone.'); await renderTree(); return; }
@@ -1708,6 +1714,9 @@ async function openScene(id) {
 
   updateTally();
   renderSceneNav(id);
+  RecordStore.snapshotCount(id).then(n => {
+    $('btn-history').textContent = n ? `History · ${n}` : 'History';
+  });
   await renderTree();
   $('sheet').scrollTop = 0;
 }
@@ -6231,6 +6240,155 @@ async function recentDays(total) {
   return out.slice(-7);
 }
 
+// ══ Scene history ══════════════════════════════════════════════════
+//
+// Earlier versions of a scene, kept on this device. Not a backup and
+// not sync — those cover losing the file and losing a machine. This
+// covers the thing neither does: rewriting a scene and wanting what
+// was there before.
+//
+// Captured automatically before anything that replaces text in bulk,
+// and periodically while writing. Nothing is captured on every
+// keystroke; a history you have to scroll through is one you won't
+// read.
+
+async function snapshotScene(sceneId, { reason = 'edit', force = false } = {}) {
+  const rec = await RecordStore.get('scene', sceneId);
+  if (!rec) return false;
+  return RecordStore.saveSnapshot(sceneId, rec.body || '', { reason, force });
+}
+
+// Before a bulk rewrite, every scene it will touch. This is the case
+// that matters most: Fix quotes across 34 scenes is the single
+// largest change the app can make to the prose.
+async function snapshotBeforeBulk(plan, reason) {
+  for (const p of plan) {
+    await RecordStore.saveSnapshot(p.id, p.before, { reason, force: true });
+  }
+}
+
+async function openHistory() {
+  const sc = App.activeScene;
+  if (!sc) return;
+  await flushActiveScene();
+
+  const rec = await RecordStore.get('scene', sc.id);
+  const versions = await RecordStore.snapshotsFor(sc.id);
+
+  const overlay = el('div', 'modal-overlay');
+  const modal = el('div', 'modal modal-wide');
+  const head = el('div', 'modal-header');
+  head.append(el('h2', 'modal-title', `History — ${rec.title || 'Untitled scene'}`));
+  const x = el('button', 'icon-btn', '\u00D7');
+  x.addEventListener('click', () => overlay.remove());
+  head.append(x);
+
+  const body = el('div', 'modal-body');
+
+  if (!versions.length) {
+    body.append(el('p', 'note',
+      'No earlier versions yet. One is kept when you make a substantial ' +
+      'change, and always before a bulk fix \u2014 and you can keep one ' +
+      'deliberately at any time.'));
+  } else {
+    body.append(el('p', 'note',
+      `${versions.length} earlier version${versions.length === 1 ? '' : 's'}, ` +
+      'kept on this device only. Everything from the last week, then one a ' +
+      'week for two months.'));
+  }
+
+  const row = el('div', 'btn-row');
+  const keep = el('button', 'ghost-btn', 'Keep this version now');
+  keep.addEventListener('click', async () => {
+    const saved = await snapshotScene(sc.id, { reason: 'manual', force: true });
+    overlay.remove();
+    showToast(saved ? 'Version kept.' : 'Already identical to the last one.');
+  });
+  row.append(keep);
+  body.append(row);
+
+  const list = el('div', 'hist-list');
+  body.append(list);
+
+  const current = rec.body || '';
+  for (const v of versions) {
+    const item = el('div', 'hist-item');
+
+    const when = el('div', 'hist-when');
+    when.append(el('span', 'hist-date', relativeWhen(v.at)));
+    const { added, removed } = Diff.summary(v.body, current);
+    when.append(el('span', 'hist-delta',
+      added || removed
+        ? `${added ? `+${added}` : ''}${added && removed ? ' ' : ''}${removed ? `\u2212${removed}` : ''} words since`
+        : 'identical to now'));
+    if (v.reason === 'manual') when.append(el('span', 'hist-tag', 'kept'));
+    if (v.reason && v.reason !== 'edit' && v.reason !== 'manual') {
+      when.append(el('span', 'hist-tag', `before ${v.reason}`));
+    }
+    item.append(when);
+
+    const actions = el('div', 'hist-actions');
+
+    const see = el('button', 'ghost-btn', 'Compare');
+    see.addEventListener('click', () => {
+      const existing = item.querySelector('.hist-diff');
+      if (existing) { existing.remove(); return; }
+      const box = el('div', 'hist-diff');
+      for (const part of Diff.words(v.body, current)) {
+        if (part.type === 'same') box.append(document.createTextNode(part.text));
+        else box.append(el(part.type === 'added' ? 'ins' : 'del', null, part.text));
+      }
+      item.append(box);
+    });
+    actions.append(see);
+
+    const back = el('button', 'ghost-btn', 'Restore');
+    back.addEventListener('click', () => {
+      showConfirm(
+        `Put this scene back to how it was ${relativeWhen(v.at).toLowerCase()}? ` +
+        'The current text is kept as a version first, so this is reversible.',
+        async () => {
+          overlay.remove();
+          // The version being replaced becomes history itself —
+          // restoring the wrong one should cost nothing.
+          await RecordStore.saveSnapshot(sc.id, current, { reason: 'restore', force: true });
+          const fresh = await RecordStore.get('scene', sc.id);
+          await RecordStore.put('scene', sc.id, { ...fresh, body: v.body });
+          pushUndo('Restored an earlier version', async () => {
+            const r = await RecordStore.get('scene', sc.id);
+            if (r) await RecordStore.put('scene', sc.id, { ...r, body: current });
+            await openScene(sc.id);
+          });
+          await openScene(sc.id);
+          await renderTree();
+          refreshSyncState();
+          showUndoToast('Restored an earlier version');
+        }, 'Restore');
+    });
+    actions.append(back);
+
+    item.append(actions);
+    list.append(item);
+  }
+
+  modal.append(head, body);
+  overlay.append(modal);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+}
+
+function relativeWhen(at) {
+  const mins = Math.round((Date.now() - at) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 8) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return new Date(at).toLocaleDateString(undefined,
+    { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+}
+
 // ══ Manuscript check ═══════════════════════════════════════════════
 //
 // Everything the app can notice, in one read-only pass. The fixers
@@ -6541,6 +6699,11 @@ function showSpacingReport(plan, totals) {
  * uses, so Ctrl-Z means one thing everywhere in the app.
  */
 async function applyTextFix(plan, label) {
+  // Before anything else. A bulk fix across 34 scenes is the largest
+  // single change the app can make to the prose, and the one most
+  // worth being able to walk back a week later.
+  await snapshotBeforeBulk(plan, label.toLowerCase());
+
   for (const p of plan) {
     const rec = await RecordStore.get('scene', p.id);
     if (rec) await RecordStore.put('scene', p.id, { ...rec, body: p.after });
@@ -7349,6 +7512,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     $(f).addEventListener('input', scheduleSave);
   }
   $('scene-status').addEventListener('change', () => flushActiveScene());
+  $('btn-history').addEventListener('click', () => openHistory()
+    .catch(e => { console.error(e); showToast('Could not open history — see the console.'); }));
 
   $('set-dark').addEventListener('change', e => {
     document.documentElement.classList.toggle('dark', e.target.checked);
