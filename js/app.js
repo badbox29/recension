@@ -6210,14 +6210,44 @@ async function wordLog() {
  * yesterday's final total rather than against a guess at today's
  * first.
  */
+/**
+ * recordDayTotal(total) — the HIGHEST total seen on this writing day.
+ *
+ * The first version recorded the first total seen each day and treated
+ * it as the day's starting point. That is only correct if the first
+ * device to look is up to date — and it usually isn't. A browser
+ * opening after midnight, before syncing, wrote a stale figure as the
+ * baseline, and every device then reported the previous night's work
+ * as today's.
+ *
+ * Recording the day's END instead is self-correcting: a device that
+ * syncs later raises the figure, and today is measured against
+ * yesterday's final total rather than a guess at today's first.
+ *
+ * Entries written under the old scheme cannot be reinterpreted — a
+ * start total and an end total are different numbers wearing the same
+ * key — so the first run under this one discards them. The week chart
+ * starts again; the alternative is a chart that is confidently wrong.
+ */
 async function recordDayTotal(total) {
   const id = RecordStore.currentProject();
   if (!id) return;
   const rec = await RecordStore.get('project', id);
   if (!rec) return;
 
-  const log = { ...(rec.wordLog || {}) };
   const key = today();
+  let log = { ...(rec.wordLog || {}) };
+
+  if (rec.wordLogVersion !== 2) {
+    // Everything here means something else. Start from what is true
+    // right now: today has ended at this total, and there is no
+    // earlier day to measure against until tomorrow.
+    log = { [key]: total };
+    await RecordStore.putMeta('project', id,
+      { ...rec, wordLog: log, wordLogVersion: 2 });
+    return;
+  }
+
   if ((log[key] || 0) >= total) return;      // nothing new to record
   log[key] = total;
 
@@ -6230,7 +6260,8 @@ async function recordDayTotal(total) {
   // putMeta, not put: this is bookkeeping. Restamping the project on
   // every render would make it the newest record in the account and
   // churn the sync for nothing.
-  await RecordStore.putMeta('project', id, { ...rec, wordLog: trimmed });
+  await RecordStore.putMeta('project', id,
+    { ...rec, wordLog: trimmed, wordLogVersion: 2 });
 }
 
 /**
