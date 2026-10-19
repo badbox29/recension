@@ -1471,10 +1471,19 @@ function speakClearTimers() {
   clearInterval(Speak._keepalive); Speak._keepalive = null;
 }
 
-// Chrome stops speaking after roughly fifteen seconds unless poked. The
-// poke is harmless in the browsers that don't need it.
+// Chrome stops speaking after roughly fifteen seconds unless poked with
+// a pause/resume pair. It is a hack, and it is not harmless elsewhere:
+// in Firefox the same poke kills the voice after a sentence or two, so
+// the browsers that don't need it must not get it.
+//
+// Chromium only. Firefox and Safari read a paragraph through unaided,
+// and the watchdog below covers them if a voice is ever dropped.
+const SPEAK_POKES = /\b(Chrome|Chromium|Edg)\//.test(
+  typeof navigator === 'undefined' ? '' : navigator.userAgent || '');
+
 function speakKeepalive() {
   clearInterval(Speak._keepalive);
+  if (!SPEAK_POKES) return;
   Speak._keepalive = setInterval(() => {
     if (Speak.state !== 'speaking') return;
     try { speechSynthesis.pause(); speechSynthesis.resume(); } catch {}
