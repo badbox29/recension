@@ -7864,8 +7864,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   $('type-popover').addEventListener('click', e => {
     e.stopPropagation();
-    const m = e.target.closest('[data-measure]');
-    const z = e.target.closest('[data-size]');
+    // button[...], not [...]: applyTypography writes data-measure and
+    // data-size onto <html>, so a bare attribute selector walks past
+    // every control in here and matches the document element. Clicking
+    // a checkbox then re-applied the current measure, which re-synced
+    // the popover and wiped the tick the change handler had just saved.
+    const m = e.target.closest('button[data-measure]');
+    const z = e.target.closest('button[data-size]');
     if (m) setTypography({ measure: m.dataset.measure });
     if (z) setTypography({ size: z.dataset.size });
   });
