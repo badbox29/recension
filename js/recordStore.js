@@ -883,6 +883,16 @@ const RecordStore = (() => {
     const bookIds = new Set(books.map(b => b.id));
     const visible = c => !_currentProject || !c.bookId || bookIds.has(c.bookId);
 
+    // The scene list above is every scene in the account: the index is
+    // not partitioned by project, and a scene's entry names only its
+    // chapter. Totalling it directly added the other projects' words to
+    // this one's figure in the rail. Count only what this project's
+    // tree actually shows — the scenes under a visible chapter, plus
+    // the unfiled ones, which is exactly the set sceneOrder() walks.
+    const liveChapters = new Set(chapters.filter(visible).map(c => c.id));
+    const counted = scenes.filter(
+      s => !s.chapterId || liveChapters.has(s.chapterId));
+
     const withScenes = c => ({
       ...c, scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
     });
@@ -910,7 +920,7 @@ const RecordStore = (() => {
       orphanChapters: sortByOrder(
         chapters.filter(c => !c.bookId && !c.partId)).map(withScenes),
       unfiled: sortByOrder(scenes.filter(s => !s.chapterId)),
-      totalWords: scenes.reduce((n, s) => n + (s.wordCount || 0), 0),
+      totalWords: counted.reduce((n, s) => n + (s.wordCount || 0), 0),
     };
   }
 
