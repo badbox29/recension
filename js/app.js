@@ -172,6 +172,10 @@ const TYPE_DEFAULTS = {
   // a manuscript is a typo rather than a choice, and the undo-to-
   // straight keystroke covers the rare case where it isn't.
   smartQuotes: true,
+  // Off by default. Plenty of people will never want prose read at
+  // them, and an unwanted control bar on every visit to the read view
+  // is worse than one checkbox for the people who do.
+  readAloud: false,
 };
 
 function loadTypography() {
@@ -202,6 +206,7 @@ function syncTypePopover() {
   for (const b of document.querySelectorAll('[data-size]'))
     b.setAttribute('aria-pressed', String(b.dataset.size === t.size));
   $('pop-titles').checked = !!t.readTitles;
+  $('pop-speak').checked  = !!t.readAloud;
 }
 
 // ── Small DOM helpers ──────────────────────────────────────────────
@@ -1207,6 +1212,8 @@ async function openRead(scope = { kind: 'all', id: null }, focusSceneId = null) 
 
 async function renderReadView() {
   const rv = $('readview');
+  // Every node the reading list points at is about to be discarded.
+  if (Speak.state !== 'idle') speakStop();
   rv.replaceChildren();
 
   const scenes = scenesInScope(App.readScope);
@@ -1223,6 +1230,8 @@ async function renderReadView() {
     rv.append(el('p', 'rv-empty', 'Nothing written here yet.'));
     return;
   }
+
+  mountSpeakBar(rv);
 
   // Bodies aren't in the tree index, so they're read here — the one place
   // in the app that deliberately loads many scene bodies at once.
@@ -1259,6 +1268,353 @@ async function renderReadView() {
     sec.append(body);
     rv.append(sec);
   }
+}
+
+// ── Read aloud ─────────────────────────────────────────────────────
+// A read-along for the read view, built on the browser's own speech
+// engine. Nothing is generated, stored or uploaded: this reads the DOM
+// that is already on screen, which is why it can't corrupt anything.
+//
+// It speaks one paragraph at a time rather than handing over the whole
+// chapter. That is not tidiness — Chrome stops speaking partway through
+// a long utterance, and paragraph-sized pieces stay under the limit.
+//
+// Voice and speed are per device, like typography: they depend on which
+// machine you're sitting at, and the voices on offer differ by browser.
+
+const SPEAK_KEY = 'recension.speech.v1';
+
+const SPEAK_DEFAULTS = { voice: '', rate: 1 };
+
+// Pause lengths, in milliseconds. A scene break needs a real beat or the
+// next scene sounds like the same one continuing.
+const SPEAK_GAP = { para: 140, heading: 500, break: 850 };
+
+const Speak = {
+  supported: typeof window !== 'undefined' && 'speechSynthesis' in window,
+  state: 'idle',          // idle | speaking | paused
+  items: [],              // [{ el, text, gap }]
+  i: 0,
+  prefs: { ...SPEAK_DEFAULTS },
+  _utter: null,
+  _timer: null,
+  _keepalive: null,
+  _voices: [],
+  _userScrolledAt: 0,
+  _selfScrollUntil: 0,
+};
+
+function loadSpeakPrefs() {
+  try {
+    Speak.prefs = { ...SPEAK_DEFAULTS, ...(JSON.parse(localStorage.getItem(SPEAK_KEY)) || {}) };
+  } catch { Speak.prefs = { ...SPEAK_DEFAULTS }; }
+  return Speak.prefs;
+}
+
+// Written straight to localStorage rather than through setTypography,
+// which re-renders the read view — changing the speed mid-paragraph
+// should not rebuild the page you are listening to.
+function saveSpeakPrefs(patch) {
+  Speak.prefs = { ...Speak.prefs, ...patch };
+  try { localStorage.setItem(SPEAK_KEY, JSON.stringify(Speak.prefs)); } catch {}
+}
+
+// Voices arrive asynchronously in Chrome: the first call usually returns
+// nothing and a voiceschanged event follows.
+function speakVoices() {
+  if (!Speak.supported) return [];
+  const all = speechSynthesis.getVoices() || [];
+  const ui = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return all.slice().sort((a, b) => {
+    const am = a.lang.toLowerCase().startsWith(ui) ? 0 : 1;
+    const bm = b.lang.toLowerCase().startsWith(ui) ? 0 : 1;
+    return am - bm || a.name.localeCompare(b.name);
+  });
+}
+
+function chosenVoice() {
+  const list = speakVoices();
+  return list.find(v => v.voiceURI === Speak.prefs.voice) ||
+         list.find(v => v.default) || list[0] || null;
+}
+
+// ── Building the reading list ──────────────────────────────────────
+// Taken from the rendered DOM rather than the markdown, so wikilinks,
+// emphasis and escapes are already resolved to the words a reader sees.
+// Scene breaks and the blank-scene placeholder become silence.
+
+function buildSpeakItems() {
+  const rv = $('readview');
+  const items = [];
+  const nodes = rv.querySelectorAll(
+    'h2.rv-chapter, .rv-title, .rv-break, .rv-body > *');
+
+  for (const el of nodes) {
+    if (el.classList.contains('rv-blank')) continue;
+
+    if (el.classList.contains('rv-break') ||
+        el.classList.contains('scene-break') ||
+        el.tagName === 'HR') {
+      items.push({ el: null, text: '', gap: SPEAK_GAP.break });
+      continue;
+    }
+
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+
+    const heading = el.classList.contains('rv-chapter') ||
+                    el.classList.contains('rv-title') ||
+                    /^H[1-6]$/.test(el.tagName);
+    items.push({ el, text, gap: heading ? SPEAK_GAP.heading : SPEAK_GAP.para });
+  }
+  return items;
+}
+
+// ── Transport ──────────────────────────────────────────────────────
+
+function speakStart(from = 0) {
+  if (!Speak.supported) return;
+  speakClearTimers();
+  speechSynthesis.cancel();
+  Speak.items = buildSpeakItems();
+  if (!Speak.items.length) { showToast('Nothing here to read.'); return; }
+  Speak.i = Math.max(0, Math.min(from, Speak.items.length - 1));
+  Speak.state = 'speaking';
+  speakKeepalive();
+  // Chrome wedges if speak() follows cancel() in the same tick.
+  Speak._timer = setTimeout(() => speakCurrent(), 60);
+  syncSpeakBar();
+}
+
+function speakCurrent() {
+  if (Speak.state !== 'speaking') return;
+  const item = Speak.items[Speak.i];
+  if (!item) { speakStop(); return; }
+
+  speakHighlight(item.el);
+
+  if (!item.text) {                       // a scene break: silence, then on
+    Speak._timer = setTimeout(() => speakAdvance(), item.gap);
+    return;
+  }
+
+  const u = new SpeechSynthesisUtterance(item.text);
+  const v = chosenVoice();
+  if (v) { u.voice = v; u.lang = v.lang; }
+  u.rate = Speak.prefs.rate;
+  u.onend = () => {
+    if (Speak.state !== 'speaking' || Speak._utter !== u) return;
+    Speak._timer = setTimeout(() => speakAdvance(), item.gap);
+  };
+  u.onerror = e => {
+    if (Speak._utter !== u) return;
+    // cancel() and pause-then-navigate both surface as errors; they are
+    // our own doing and must not be reported or skipped past.
+    if (e.error === 'interrupted' || e.error === 'canceled') return;
+    if (Speak.state !== 'speaking') return;
+    Speak._timer = setTimeout(() => speakAdvance(), item.gap);
+  };
+  Speak._utter = u;
+  speechSynthesis.speak(u);
+}
+
+function speakAdvance() {
+  if (Speak.state !== 'speaking') return;
+  if (Speak.i >= Speak.items.length - 1) { speakStop(true); return; }
+  Speak.i += 1;
+  speakCurrent();
+}
+
+function speakSkip(delta) {
+  if (!Speak.items.length) Speak.items = buildSpeakItems();
+  const next = Math.max(0, Math.min(Speak.i + delta, Speak.items.length - 1));
+  if (Speak.state === 'idle') { speakStart(next); return; }
+  Speak.i = next;
+  speakClearTimers();
+  speechSynthesis.cancel();
+  Speak.state = 'speaking';
+  Speak._timer = setTimeout(() => speakCurrent(), 60);
+  syncSpeakBar();
+}
+
+function speakPause() {
+  if (Speak.state !== 'speaking') return;
+  Speak.state = 'paused';
+  speakClearTimers();
+  try { speechSynthesis.pause(); } catch {}
+  syncSpeakBar();
+}
+
+function speakResume() {
+  if (Speak.state !== 'paused') return;
+  Speak.state = 'speaking';
+  speakKeepalive();
+  // If the engine dropped the paused utterance (some mobile builds do),
+  // start the paragraph again rather than sitting in silence.
+  try { speechSynthesis.resume(); } catch {}
+  if (!speechSynthesis.speaking) Speak._timer = setTimeout(() => speakCurrent(), 60);
+  syncSpeakBar();
+}
+
+function speakStop(finished = false) {
+  Speak.state = 'idle';
+  Speak._utter = null;
+  speakClearTimers();
+  if (Speak.supported) { try { speechSynthesis.cancel(); } catch {} }
+  speakHighlight(null);
+  if (finished) Speak.i = 0;
+  syncSpeakBar();
+}
+
+function speakClearTimers() {
+  clearTimeout(Speak._timer); Speak._timer = null;
+  clearInterval(Speak._keepalive); Speak._keepalive = null;
+}
+
+// Chrome stops speaking after roughly fifteen seconds unless poked. The
+// poke is harmless in the browsers that don't need it.
+function speakKeepalive() {
+  clearInterval(Speak._keepalive);
+  Speak._keepalive = setInterval(() => {
+    if (Speak.state !== 'speaking') return;
+    try { speechSynthesis.pause(); speechSynthesis.resume(); } catch {}
+  }, 9000);
+}
+
+// ── Following along ────────────────────────────────────────────────
+// The highlight always moves. The scroll does not: if you have scrolled
+// off to look at something else in the last few seconds, the page stays
+// where you put it.
+
+function speakHighlight(el) {
+  for (const n of document.querySelectorAll('.rv-speaking'))
+    n.classList.remove('rv-speaking');
+  if (!el) return;
+  el.classList.add('rv-speaking');
+
+  if (Date.now() - Speak._userScrolledAt < 5000) return;
+  const r = el.getBoundingClientRect();
+  const lo = window.innerHeight * 0.25, hi = window.innerHeight * 0.7;
+  if (r.top >= lo && r.bottom <= hi) return;
+  Speak._selfScrollUntil = Date.now() + 700;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+// ── The control bar ────────────────────────────────────────────────
+
+function mountSpeakBar(rv) {
+  if (!App.typography.readAloud) return;
+
+  const bar = el('div', 'rv-speak');
+  bar.id = 'rv-speak';
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Read aloud');
+
+  if (!Speak.supported) {
+    bar.append(el('span', 'rv-speak-note',
+      'This browser has no built-in speech engine.'));
+    rv.append(bar);
+    return;
+  }
+
+  const play = el('button', 'rv-play', 'Read aloud');
+  play.type = 'button'; play.id = 'rv-play';
+  play.addEventListener('click', () => {
+    if (Speak.state === 'speaking') speakPause();
+    else if (Speak.state === 'paused') speakResume();
+    else speakStart(Speak.i);
+  });
+
+  const stop = el('button', null, 'Stop');
+  stop.type = 'button'; stop.id = 'rv-stop';
+  stop.addEventListener('click', () => { Speak.i = 0; speakStop(true); });
+
+  const back = el('button', null, '\u2039 \u00B6');
+  back.type = 'button';
+  back.setAttribute('aria-label', 'Previous paragraph');
+  back.addEventListener('click', () => speakSkip(-1));
+
+  const fwd = el('button', null, '\u00B6 \u203A');
+  fwd.type = 'button';
+  fwd.setAttribute('aria-label', 'Next paragraph');
+  fwd.addEventListener('click', () => speakSkip(1));
+
+  const rate = el('select');
+  rate.id = 'rv-rate';
+  rate.setAttribute('aria-label', 'Reading speed');
+  for (const r of [0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.8]) {
+    const o = el('option', null, `${r}\u00D7`);
+    o.value = String(r);
+    rate.append(o);
+  }
+  rate.value = String(Speak.prefs.rate);
+  rate.addEventListener('change', () => {
+    saveSpeakPrefs({ rate: Number(rate.value) });
+    // Rate is fixed for the life of an utterance, so restart the
+    // paragraph rather than letting the change take effect invisibly.
+    if (Speak.state === 'speaking') speakSkip(0);
+  });
+
+  const voice = el('select');
+  voice.id = 'rv-voice';
+  voice.setAttribute('aria-label', 'Voice');
+  voice.addEventListener('change', () => {
+    saveSpeakPrefs({ voice: voice.value });
+    if (Speak.state === 'speaking') speakSkip(0);
+  });
+
+  bar.append(play, stop, back, fwd, el('span', 'rv-speak-spacer'), rate, voice);
+  rv.append(bar);
+
+  fillVoiceSelect();
+  if (!Speak._voicesBound) {
+    Speak._voicesBound = true;
+    speechSynthesis.addEventListener?.('voiceschanged', fillVoiceSelect);
+  }
+  syncSpeakBar();
+}
+
+function fillVoiceSelect() {
+  const sel = $('rv-voice');
+  if (!sel) return;
+  const list = speakVoices();
+  sel.replaceChildren();
+  if (!list.length) {
+    const o = el('option', null, 'Default voice');
+    o.value = '';
+    sel.append(o);
+    return;
+  }
+  for (const v of list) {
+    const o = el('option', null, `${v.name} (${v.lang})`);
+    o.value = v.voiceURI;
+    sel.append(o);
+  }
+  const current = chosenVoice();
+  sel.value = Speak.prefs.voice || (current ? current.voiceURI : '');
+}
+
+function syncSpeakBar() {
+  const play = $('rv-play'), stop = $('rv-stop');
+  if (!play) return;
+  play.textContent = Speak.state === 'speaking' ? 'Pause'
+                   : Speak.state === 'paused'   ? 'Resume'
+                   : 'Read aloud';
+  if (stop) stop.disabled = Speak.state === 'idle';
+}
+
+// Leaving the read view — by any route, including ones added later —
+// stops the voice. A disembodied narrator continuing over the grid view
+// would be a bug nobody would think to look for here.
+function watchReadViewForSpeech() {
+  const rv = $('readview');
+  if (!rv) return;
+  new MutationObserver(() => {
+    if (rv.hidden && Speak.state !== 'idle') speakStop();
+  }).observe(rv, { attributes: true, attributeFilter: ['hidden'] });
+
+  // Closing or reloading the tab: some browsers keep speaking otherwise.
+  window.addEventListener('pagehide', () => { try { speechSynthesis.cancel(); } catch {} });
 }
 
 // ── Scroll-spy ─────────────────────────────────────────────────────
@@ -7484,6 +7840,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   registerServiceWorker();
   loadTypography();
+  loadSpeakPrefs();
+  watchReadViewForSpeech();
   syncTypePopover();
   bindAuthorFields();
   bindSettingsTabs();
@@ -7513,6 +7871,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   $('pop-titles').addEventListener('change', e =>
     setTypography({ readTitles: e.target.checked }));
+  $('pop-speak').addEventListener('change', e =>
+    setTypography({ readAloud: e.target.checked }));
   document.addEventListener('click', () => {
     $('type-popover').hidden = true;
     $('btn-type').setAttribute('aria-expanded', 'false');
@@ -7538,6 +7898,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('sheet').addEventListener('scroll', () => {
     hideCardTip();
+    if (Date.now() > Speak._selfScrollUntil) Speak._userScrolledAt = Date.now();
     if (App.view !== 'read' || _spyRaf) return;
     _spyRaf = requestAnimationFrame(() => { _spyRaf = null; updateSpy(); });
   }, { passive: true });
