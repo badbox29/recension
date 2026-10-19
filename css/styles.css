@@ -3212,3 +3212,70 @@ kbd {
   color: var(--ink);
   background: color-mix(in srgb, var(--c-location, #4C6B54) 18%, transparent);
 }
+
+/* ══ Read aloud ════════════════════════════════════════════════════
+   Only rendered when the opt-in in the type popover is on. Sits under
+   the read-view header and scrolls away with it: it is a control for
+   starting a reading, not a player you watch. */
+
+.rv-speak {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.5rem 0 0.75rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.rv-speak button {
+  font: inherit;
+  font-size: var(--t-xs);
+  padding: 0.25rem 0.5rem;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.rv-speak button:hover:not(:disabled) { color: var(--ink); }
+.rv-speak button:disabled { opacity: 0.4; cursor: default; }
+.rv-speak button.rv-play {
+  min-width: 5rem;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--vellum);
+}
+
+.rv-speak select {
+  font: inherit;
+  font-size: var(--t-xs);
+  padding: 0.25rem;
+  max-width: 11rem;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-soft);
+}
+
+.rv-speak .rv-speak-spacer { flex: 1; }
+.rv-speak .rv-speak-note {
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+
+/* The paragraph currently being spoken. A tinted ground rather than a
+   border, so nothing reflows as the highlight moves down the page. */
+.rv-body > .rv-speaking,
+.rv-title.rv-speaking,
+.rv-chapter.rv-speaking {
+  background: color-mix(in srgb, var(--rubric) 12%, transparent);
+  box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--rubric) 12%, transparent);
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rv-body > .rv-speaking,
+  .rv-title.rv-speaking,
+  .rv-chapter.rv-speaking { transition: background 120ms linear; }
+}
