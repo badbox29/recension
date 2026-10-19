@@ -670,16 +670,20 @@
     <button data-size="md">Medium</button>
     <button data-size="lg">Large</button>
   </div>
-  <label class="pop-row">
-    <span>Scene titles while reading</span>
+  <!-- The input is a SIBLING of its label, tied by for=. Nesting it
+       inside the label makes Firefox toggle twice on one click — once
+       from the input, once from the label forwarding activation — so
+       the box never appears to change. This row was stuck for months. -->
+  <div class="pop-row">
+    <label for="pop-titles">Scene titles while reading</label>
     <input type="checkbox" id="pop-titles" />
-  </label>
+  </div>
   <!-- Off by default. When off the read view is exactly what it was
        before this feature existed: no bar, no voice list loaded. -->
-  <label class="pop-row">
-    <span>Read aloud controls</span>
+  <div class="pop-row">
+    <label for="pop-speak">Read aloud controls</label>
     <input type="checkbox" id="pop-speak" />
-  </label>
+  </div>
 </div>
 
 <!-- Search. A palette rather than a results page: you're looking for
