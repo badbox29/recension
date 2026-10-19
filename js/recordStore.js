@@ -247,6 +247,11 @@ const RecordStore = (() => {
       e.s = rec.status || 'draft';
       e.p = rec.chapterId || '';
       e.o = rec.order || 0;
+      // A filed scene's project is derivable through its chapter's book,
+      // but an Unplaced one has nothing above it to ask. Carrying the id
+      // here is what lets Unplaced belong to one project instead of
+      // appearing, and counting, in all of them.
+      e.j = rec.projectId || '';
     } else if (type === 'chapter') {
       e.t = rec.title || '';
       // Parent is the part when there is one, else the work. `g` records
@@ -825,7 +830,8 @@ const RecordStore = (() => {
     const siblings = Object.fromEntries(
       Object.entries(all).filter(([, s]) => (s.chapterId || null) === chapterId));
     const ok = await put('scene', id, {
-      id, chapterId, title: title || 'Untitled Scene',
+      id, chapterId, projectId: _currentProject,
+      title: title || 'Untitled Scene',
       body: '', synopsis: '', pov: '', status: 'draft',
       wordCount: 0, order: nextOrder(siblings),
     });
@@ -867,6 +873,7 @@ const RecordStore = (() => {
       });
       else if (type === 'scene')   scenes.push({
         ...base, chapterId: e.p || null, wordCount: e.w, status: e.s,
+        projectId: e.j || null,
       });
     }
 
@@ -890,8 +897,16 @@ const RecordStore = (() => {
     // tree actually shows — the scenes under a visible chapter, plus
     // the unfiled ones, which is exactly the set sceneOrder() walks.
     const liveChapters = new Set(chapters.filter(visible).map(c => c.id));
+
+    // An Unplaced scene is this project's if it says so. One written
+    // before scenes carried a project says nothing, and still shows
+    // everywhere — losing sight of a scene is far worse than counting
+    // it twice, and new ones are stamped, so this fades on its own.
+    const ownScene = s =>
+      !_currentProject || !s.projectId || s.projectId === _currentProject;
+
     const counted = scenes.filter(
-      s => !s.chapterId || liveChapters.has(s.chapterId));
+      s => s.chapterId ? liveChapters.has(s.chapterId) : ownScene(s));
 
     const withScenes = c => ({
       ...c, scenes: sortByOrder(scenes.filter(s => s.chapterId === c.id)),
@@ -919,7 +934,7 @@ const RecordStore = (() => {
       // Chapters whose work was deleted would otherwise vanish silently.
       orphanChapters: sortByOrder(
         chapters.filter(c => !c.bookId && !c.partId)).map(withScenes),
-      unfiled: sortByOrder(scenes.filter(s => !s.chapterId)),
+      unfiled: sortByOrder(scenes.filter(s => !s.chapterId && ownScene(s))),
       totalWords: counted.reduce((n, s) => n + (s.wordCount || 0), 0),
     };
   }
@@ -1446,6 +1461,11 @@ const RecordStore = (() => {
     };
 
     const updated = { ...rec, [field]: parentId || null };
+    // Dragging a scene out of its chapter is the main way one reaches
+    // Unplaced, and the project you are dragging in is the answer. Set
+    // it here rather than leaving the scene to be claimed by whichever
+    // project happens to be open next.
+    if (type === 'scene') updated.projectId = _currentProject;
     if (type === 'chapter') {
       // A chapter always knows its book, whether or not it sits in a part.
       updated.bookId = bookId || rec.bookId || null;
