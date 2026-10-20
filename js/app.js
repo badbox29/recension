@@ -1372,12 +1372,27 @@ function buildSpeakItems() {
 
 // ── Transport ──────────────────────────────────────────────────────
 
+// The paragraph you are looking at, which is where a reading should
+// begin: the first one whose foot is still below the top of the window.
+// Anything above that you have already read.
+function speakIndexInView() {
+  const edge = window.innerHeight * 0.2;
+  for (let i = 0; i < Speak.items.length; i++) {
+    const el = Speak.items[i].el;
+    if (el && el.getBoundingClientRect().bottom > edge) return i;
+  }
+  return 0;
+}
+
+// from may be an index, or 'here' to pick up at the current scroll
+// position — what the play button wants after an hour of reading.
 function speakStart(from = 0) {
   if (!Speak.supported) return;
   speakClearTimers();
   speechSynthesis.cancel();
   Speak.items = buildSpeakItems();
   if (!Speak.items.length) { showToast('Nothing here to read.'); return; }
+  if (from === 'here') from = speakIndexInView();
   Speak.i = Math.max(0, Math.min(from, Speak.items.length - 1));
   Speak.state = 'speaking';
   speakKeepalive();
@@ -1531,7 +1546,7 @@ function mountSpeakBar(rv) {
   play.addEventListener('click', () => {
     if (Speak.state === 'speaking') speakPause();
     else if (Speak.state === 'paused') speakResume();
-    else speakStart(Speak.i);
+    else speakStart('here');
   });
 
   const stop = el('button', null, 'Stop');
