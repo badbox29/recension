@@ -52,7 +52,7 @@ const Quotes = (() => {
     'gainst', 'neath', 'tween', 'tis', 'twas', 'twere', 'twould',
     'n', 'sup', 'murica', 'specially', 'scuse', 'spose', 'cept',
     'fraid', 'course', 'nuff', 'kay', 'lo', 'pon', 'ere', 'ope',
-    'dors',
+    'dors', 'net',
   ];
 
   /**

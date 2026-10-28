@@ -7441,7 +7441,14 @@ function openCharPalette() {
 
   document.body.append(_charBox);
   paint('');
+
+  // Focused twice, deliberately. This runs inside the Ctrl-/ keydown,
+  // while CodeMirror still owns focus, and its hidden textarea takes
+  // focus straight back as the event finishes — so the palette opened
+  // with the caret still in the manuscript, and Enter typed a line
+  // break behind it. The second call lands after the editor settles.
   field.focus();
+  setTimeout(() => { if (_charBox) field.focus(); }, 0);
 }
 
 function drawChars(grid) {
