@@ -2031,7 +2031,13 @@ async function flushActiveScene() {
   }
 
   await RecordStore.put('scene', sc.id, next);
-  App.activeScene = { ...next };
+  // Re-read rather than reusing `next`: put() stamps updatedAt (and
+  // recomputes a scene's wordCount) inside the store, so the object
+  // we just sent is already out of date. Keeping it as the in-memory
+  // copy left an old timestamp there for ever, and the guard above
+  // then read every later save as "the store is newer than me" — a
+  // merge warning on every keystroke, on a single device.
+  App.activeScene = (await RecordStore.get('scene', sc.id)) || { ...next };
   await renderTree();
   refreshSyncState();
 }
@@ -4188,7 +4194,8 @@ async function flushActiveCard() {
 
   await RecordStore.put('card', c.id, next);
   invalidateCardIndex();          // name or aka may have changed
-  App.activeCard = { ...next };
+  // See flushActiveScene: the stamp happens in the store, not here.
+  App.activeCard = (await RecordStore.get('card', c.id)) || { ...next };
 
   // The old name is still written into every scene that linked here.
   const renamed = (c.name || '').trim();
@@ -4712,7 +4719,8 @@ async function flushActiveEvent() {
   }
 
   await RecordStore.put('event', e.id, next);
-  App.activeEvent = { ...next };
+  // See flushActiveScene: the stamp happens in the store, not here.
+  App.activeEvent = (await RecordStore.get('event', e.id)) || { ...next };
   await renderEvents();
   refreshSyncState();
 }
