@@ -4107,6 +4107,39 @@ function offerKeepAlias(cardId, oldName) {
   _toastTimer = setTimeout(() => { t.hidden = true; }, 12000);
 }
 
+/**
+ * threeWay(base, mine, stored) — merge an edit against a newer record.
+ *
+ * `base` is the copy the editor was given, `mine` is what the form
+ * holds now, `stored` is what is actually in the store — newer,
+ * because a pull landed while the editor was open.
+ *
+ * Writing `mine` wholesale is what lost the manuscript: it carries
+ * every field as it stood at open, so untouched fields quietly revert
+ * to the older text and the sync spreads that everywhere. Cards and
+ * events are sets of discrete fields, so this can be settled properly
+ * — a field the writer changed is theirs, a field only the other
+ * device changed stays as it arrived, and nothing has to be stashed
+ * somewhere for later.
+ *
+ * Only a field both sides changed is a real conflict. The writer wins
+ * those, because it is their text on screen, and the count is
+ * returned so they can be told rather than left to notice.
+ */
+function threeWay(base, mine, stored) {
+  const merged = { ...stored };
+  let conflicts = 0;
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+
+  for (const k of new Set([...Object.keys(base), ...Object.keys(mine)])) {
+    if (k === 'id' || k === 'createdAt' || k === 'updatedAt') continue;
+    if (same(mine[k], base[k])) continue;          // untouched here
+    if (!same(stored[k], base[k])) conflicts += 1; // changed in both
+    merged[k] = mine[k];
+  }
+  return { merged, conflicts };
+}
+
 let _cardSaveTimer = null;
 function scheduleCardSave() {
   setSyncState('dirty');
@@ -4114,12 +4147,10 @@ function scheduleCardSave() {
   _cardSaveTimer = setTimeout(() => flushActiveCard(), SAVE_DEBOUNCE);
 }
 
-async function flushActiveCard() {
-  clearTimeout(_cardSaveTimer);
-  const c = App.activeCard;
-  if (!c || $('card-edit').hidden) return;
-
-  const next = {
+// The card as the form currently holds it. Shared so that "has this
+// been edited?" and "what should be saved?" can never disagree.
+function cardFromForm(c) {
+  return {
     ...c,
     name:     $('card-name').value.trim() || 'Untitled',
     cardType: $('card-type').value,
@@ -4128,11 +4159,32 @@ async function flushActiveCard() {
     body:     $('card-body').value,
     fields:   readCardFields(),
   };
+}
+
+async function flushActiveCard() {
+  clearTimeout(_cardSaveTimer);
+  const c = App.activeCard;
+  if (!c || $('card-edit').hidden) return;
+
+  let next = cardFromForm(c);
 
   // Same guard as scenes: don't bump updatedAt or queue a sync for a card
   // that was only looked at.
   const same = JSON.stringify(next) === JSON.stringify(c);
   if (same) { refreshSyncState(); return; }
+
+  // A pull may have replaced this card since the editor opened. Merge
+  // rather than overwrite — see threeWay().
+  const stored = await RecordStore.get('card', c.id);
+  if (stored && (stored.updatedAt || 0) > (c.updatedAt || 0)) {
+    const r = threeWay(c, next, stored);
+    next = r.merged;
+    showToast(r.conflicts
+      ? 'This card was also changed on another device. Yours was kept ' +
+        'where both had edits.'
+      : 'Merged with a newer copy of this card from another device.',
+      8000);
+  }
 
   await RecordStore.put('card', c.id, next);
   invalidateCardIndex();          // name or aka may have changed
@@ -4611,17 +4663,15 @@ function scheduleEventSave() {
   _evSaveTimer = setTimeout(() => flushActiveEvent(), SAVE_DEBOUNCE);
 }
 
-async function flushActiveEvent() {
-  clearTimeout(_evSaveTimer);
-  const e = App.activeEvent;
-  if (!e || $('event-edit').hidden) return;
-
+// The event as the form currently holds it, for the same reason as
+// cardFromForm(): one definition of "what the editor says".
+function eventFromForm(e) {
   const startRaw = $('ev-start').value.trim();
   const endRaw   = $('ev-end').value.trim();
   const start = parseWhen(startRaw);
   const end   = parseWhen(endRaw);
 
-  const next = {
+  return {
     ...e,
     title: $('ev-title').value.trim() || 'Untitled event',
     kind:  $('ev-kind').value,
@@ -4636,8 +4686,30 @@ async function flushActiveEvent() {
     sceneRef: $('ev-scene').value || null,
     body: $('ev-body').value,
   };
+}
+
+async function flushActiveEvent() {
+  clearTimeout(_evSaveTimer);
+  const e = App.activeEvent;
+  if (!e || $('event-edit').hidden) return;
+
+  let next = eventFromForm(e);
 
   if (JSON.stringify(next) === JSON.stringify(e)) { refreshSyncState(); return; }
+
+  // As with cards: a pull may have replaced this event under the open
+  // editor, and writing the form wholesale would revert every field
+  // the writer did not touch.
+  const stored = await RecordStore.get('event', e.id);
+  if (stored && (stored.updatedAt || 0) > (e.updatedAt || 0)) {
+    const r = threeWay(e, next, stored);
+    next = r.merged;
+    showToast(r.conflicts
+      ? 'This event was also changed on another device. Yours was kept ' +
+        'where both had edits.'
+      : 'Merged with a newer copy of this event from another device.',
+      8000);
+  }
 
   await RecordStore.put('event', e.id, next);
   App.activeEvent = { ...next };
@@ -8356,6 +8428,8 @@ async function afterPull() {
   }
 
   await refreshOpenScene();
+  await refreshOpenCard();
+  await refreshOpenEvent();
   invalidateCardIndex();
   refreshWikilinkOverlay();
   await renderTree();
@@ -8409,6 +8483,42 @@ async function refreshOpenScene() {
   $('scene-status').value   = stored.status || 'draft';
   $('scene-synopsis').value = stored.synopsis || '';
   showToast('This scene was updated from another device.');
+}
+
+/**
+ * refreshOpenCard() / refreshOpenEvent() — the same courtesy scenes get.
+ *
+ * When nothing has been typed, taking on the newer record costs
+ * nothing and removes the conflict before it can happen: the openers
+ * re-read and repaint, and their own flush is a no-op because the
+ * form still matches what it was given.
+ *
+ * When there ARE unsaved edits, these do nothing on purpose. The
+ * merge in the flush is the right place to settle that, and it has
+ * the base copy it needs to do it field by field; repainting here
+ * would throw the writer's work away to avoid a conflict that the
+ * save handles properly.
+ */
+async function refreshOpenCard() {
+  const c = App.activeCard;
+  if (!c || $('card-edit').hidden) return;
+  const stored = await RecordStore.get('card', c.id);
+  if (!stored || (stored.updatedAt || 0) <= (c.updatedAt || 0)) return;
+  if (JSON.stringify(cardFromForm(c)) !== JSON.stringify(c)) return;
+
+  await openCard(c.id);
+  showToast('This card was updated from another device.');
+}
+
+async function refreshOpenEvent() {
+  const e = App.activeEvent;
+  if (!e || $('event-edit').hidden) return;
+  const stored = await RecordStore.get('event', e.id);
+  if (!stored || (stored.updatedAt || 0) <= (e.updatedAt || 0)) return;
+  if (JSON.stringify(eventFromForm(e)) !== JSON.stringify(e)) return;
+
+  await openEvent(e.id);
+  showToast('This event was updated from another device.');
 }
 
 /**
