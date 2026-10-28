@@ -2011,6 +2011,25 @@ async function flushActiveScene() {
     .every(k => next[k] === sc[k]);
   if (unchanged) { refreshSyncState(); return; }
 
+  // The record as it stands NOW, not as it was when the editor opened.
+  // A background pull can replace it under an open scene, and because
+  // `next` is built from the copy taken at open, writing it restamps
+  // stale prose as the newest version in the account — which the sync
+  // then dutifully spreads to every device. One keystroke was enough.
+  //
+  // The editor's text still wins, because it is what the writer is
+  // looking at and may have just changed. What must not happen is the
+  // other version disappearing, so it is kept as a snapshot first.
+  const stored = await RecordStore.get('scene', sc.id);
+  if (stored && (stored.updatedAt || 0) > (sc.updatedAt || 0) &&
+      (stored.body || '') !== (next.body || '')) {
+    await RecordStore.saveSnapshot(sc.id, stored.body || '',
+      { reason: 'incoming', force: true });
+    showToast('A newer version of this scene arrived from another ' +
+      'device. Your text is what was saved; theirs is kept in ' +
+      'Snapshots.', 10000);
+  }
+
   await RecordStore.put('scene', sc.id, next);
   App.activeScene = { ...next };
   await renderTree();
@@ -8336,11 +8355,60 @@ async function afterPull() {
     showToast('Cards and events from your other devices have been reconnected.', 6000);
   }
 
+  await refreshOpenScene();
   invalidateCardIndex();
   refreshWikilinkOverlay();
   await renderTree();
   if (App.section === 'cards') renderCards();
   if (App.section === 'events') renderEvents();
+}
+
+/**
+ * refreshOpenScene() — take on a newer copy of the scene on screen.
+ *
+ * A pull writes new records to the store, but the open editor holds
+ * the copy it was given when the scene was opened. Left alone, that
+ * copy is what the next save writes back — so arriving text was not
+ * merely ignored, it was overwritten by prose the app already knew
+ * was older. This is the other half of the guard in
+ * flushActiveScene(): that one stops the loss at the moment of
+ * writing, this one stops it arising at all.
+ *
+ * If nothing has been typed, the new text simply replaces what is on
+ * screen. If there are unsaved edits they are never discarded — the
+ * incoming version is kept as a snapshot and the writer is told.
+ */
+async function refreshOpenScene() {
+  const sc = App.activeScene;
+  if (!sc || App.readOnly) return;
+
+  const stored = await RecordStore.get('scene', sc.id);
+  if (!stored) return;
+  if ((stored.updatedAt || 0) <= (sc.updatedAt || 0)) return;
+
+  const shown = App.editor ? App.editor.value() : sc.body;
+  if (shown !== (sc.body || '')) {
+    await RecordStore.saveSnapshot(sc.id, stored.body || '',
+      { reason: 'incoming', force: true });
+    showToast('A newer version of this scene arrived while you were ' +
+      'editing. Nothing you typed was touched; theirs is in ' +
+      'Snapshots.', 10000);
+    return;
+  }
+
+  App.activeScene = stored;
+
+  if (App.editor && App.editor.value() !== (stored.body || '')) {
+    const cm = App.editor.codemirror;
+    const at = cm?.getCursor();
+    App.editor.value(stored.body || '');
+    if (at) cm.setCursor(at);
+  }
+  $('scene-title').value    = stored.title || '';
+  $('scene-pov').value      = stored.pov || '';
+  $('scene-status').value   = stored.status || 'draft';
+  $('scene-synopsis').value = stored.synopsis || '';
+  showToast('This scene was updated from another device.');
 }
 
 /**
