@@ -6660,8 +6660,11 @@ async function paintWordTotals(total) {
   // Baseline first, so the first look on a new day records the
   // starting point rather than counting the day's work as zero.
   await recordDayTotal(total);
-  const n = await sessionWords(total);
-  if (n) el_.textContent = `${total.toLocaleString()} words · +${n.toLocaleString()} today`;
+  const span = await sessionWords(total);
+  if (span && span.n) {
+    el_.textContent = `${total.toLocaleString()} words · `
+      + `+${span.n.toLocaleString()} ${spanLabel(span.since)}`;
+  }
 
   // Re-run when the writing day turns over, so the count resets on
   // its own rather than when you next happen to edit something.
@@ -6672,22 +6675,46 @@ async function paintWordTotals(total) {
 }
 
 /**
- * sessionWords(total) — words written today.
+ * sessionWords(total) — words written since the last recorded day.
  *
  * Measured against the last recorded day BEFORE today, so it does not
  * depend on anything having been recorded correctly today. Returns
  * null when there is no earlier day to measure from — the first day
  * of a project has nothing to compare against, and claiming the whole
  * manuscript as today's work would be a lie.
+ *
+ * It returns that day as well as the figure, because the gap is often
+ * not a single day. A project records only on days you have it open,
+ * so a week spent in a second project leaves no entries at all, and
+ * the number can span five days while calling itself today's work.
+ * The caller labels it from `since`. Filling the silent days with the
+ * previous total would be worse than a wide span: it would invent
+ * zero-word days you may have spent writing somewhere else.
  */
 async function sessionWords(total) {
   const log = await wordLog();
   const key = today();
   const earlier = Object.keys(log).filter(k => k < key).sort();
   if (!earlier.length) return null;
-  const base = log[earlier[earlier.length - 1]];
+  const since = earlier[earlier.length - 1];
   // A deletion can make this negative, which is true but not useful.
-  return Math.max(0, total - base);
+  return { n: Math.max(0, total - log[since]), since };
+}
+
+// Yesterday's key, for deciding whether a span really is just today.
+// Built from today() rather than the clock so it honours the 4am day.
+function yesterdayKey() {
+  const d = new Date(today() + 'T12:00:00');
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// 'today' when the span is one day, otherwise 'since 23 Oct'.
+function spanLabel(since) {
+  if (since >= yesterdayKey()) return 'today';
+  const d = new Date(since + 'T12:00:00');
+  return 'since ' + d.toLocaleDateString(undefined,
+    { day: 'numeric', month: 'short' });
 }
 
 /**
